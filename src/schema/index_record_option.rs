@@ -17,6 +17,9 @@ pub enum IndexRecordOption {
     #[serde(rename = "basic")]
     #[default]
     Basic,
+    /// records only the `DocId`s and positions
+    #[serde(rename = "basic_position")]
+    WithPositions,
     /// records the document ids as well as the term frequency.
     /// The term frequency can help giving better scoring of the documents.
     #[serde(rename = "freq")]
@@ -33,7 +36,7 @@ impl IndexRecordOption {
     /// term frequencies.
     pub fn has_freq(self) -> bool {
         match self {
-            IndexRecordOption::Basic => false,
+            IndexRecordOption::Basic | IndexRecordOption::WithPositions => false,
             IndexRecordOption::WithFreqs | IndexRecordOption::WithFreqsAndPositions => true,
         }
     }
@@ -42,7 +45,7 @@ impl IndexRecordOption {
     ///  term positions.
     pub fn has_positions(self) -> bool {
         match self {
-            IndexRecordOption::Basic | IndexRecordOption::WithFreqs => false,
+            IndexRecordOption::Basic | IndexRecordOption::WithPositions | IndexRecordOption::WithFreqs => false,
             IndexRecordOption::WithFreqsAndPositions => true,
         }
     }
@@ -55,6 +58,7 @@ impl IndexRecordOption {
             (WithFreqsAndPositions, WithFreqsAndPositions) => WithFreqsAndPositions,
             (WithFreqs, WithFreqs) => WithFreqs,
             (WithFreqsAndPositions, WithFreqs) => WithFreqs,
+            (WithFreqsAndPositions, WithPositions) => WithPositions,
             (WithFreqs, WithFreqsAndPositions) => WithFreqs,
             _ => Basic,
         }

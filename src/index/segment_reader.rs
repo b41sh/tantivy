@@ -153,11 +153,11 @@ impl SegmentReader {
         let termdict_composite = CompositeFile::open(&termdict_file)?;
 
         //const EMPTY_SLICE: &[u8] = &[];
-        let empty_slice: &[u8] = &[];
+        //let empty_slice: &[u8] = &[];
+        //let store_file = FileSlice::from(empty_slice);
 
 
-        //let store_file = segment.open_read(SegmentComponent::Store)?;
-        let store_file = FileSlice::from(empty_slice);
+        let store_file = segment.open_read(SegmentComponent::Store)?;
 
 
 

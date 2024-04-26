@@ -200,6 +200,19 @@ impl SkipReader {
                     block_wand_term_freq: 0,
                 };
             }
+            IndexRecordOption::WithPositions => {
+                println!("\n\n----====----skip read_block_info");
+                // todo
+                advance_len = 5;
+                self.block_info = BlockInfo::BitPacked {
+                    doc_num_bits,
+                    strict_delta_encoded,
+                    tf_num_bits: 0,
+                    tf_sum: 0,
+                    block_wand_fieldnorm_id: 0,
+                    block_wand_term_freq: 0,
+                };
+            }
             IndexRecordOption::WithFreqs => {
                 let tf_num_bits = bytes[5];
                 let block_wand_fieldnorm_id = bytes[6];

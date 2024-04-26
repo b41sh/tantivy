@@ -231,6 +231,84 @@ impl Recorder for TermFrequencyRecorder {
     }
 }
 
+/// Recorder encoding positions.
+#[derive(Clone, Copy, Default)]
+pub struct PositionRecorder {
+    stack: ExpUnrolledLinkedList,
+    current_doc: DocId,
+}
+
+impl Recorder for PositionRecorder {
+    #[inline]
+    fn current_doc(&self) -> DocId {
+        self.current_doc
+    }
+
+    #[inline]
+    fn new_doc(&mut self, doc: DocId, arena: &mut MemoryArena) {
+        let delta = doc - self.current_doc;
+        self.current_doc = doc;
+        self.stack.writer(arena).write_u32_vint(delta);
+    }
+
+    #[inline]
+    fn record_position(&mut self, position: u32, arena: &mut MemoryArena) {
+        self.stack
+            .writer(arena)
+            .write_u32_vint(position.wrapping_add(1u32));
+    }
+
+    #[inline]
+    fn close_doc(&mut self, arena: &mut MemoryArena) {
+        self.stack.writer(arena).write_u32_vint(POSITION_END);
+    }
+
+    fn serialize(
+        &self,
+        arena: &MemoryArena,
+        doc_id_map: Option<&DocIdMapping>,
+        serializer: &mut FieldSerializer<'_>,
+        buffer_lender: &mut BufferLender,
+    ) {
+        let (buffer_u8, buffer_positions) = buffer_lender.lend_all();
+        self.stack.read_to_end(arena, buffer_u8);
+        let mut u32_it = VInt32Reader::new(&buffer_u8[..]);
+        let mut doc_id_and_positions = vec![];
+        let mut prev_doc = 0;
+        while let Some(delta_doc_id) = u32_it.next() {
+            let doc_id = prev_doc + delta_doc_id;
+            prev_doc = doc_id;
+            let mut prev_position_plus_one = 1u32;
+            buffer_positions.clear();
+            loop {
+                match u32_it.next() {
+                    Some(POSITION_END) | None => {
+                        break;
+                    }
+                    Some(position_plus_one) => {
+                        let delta_position = position_plus_one - prev_position_plus_one;
+                        buffer_positions.push(delta_position);
+                        prev_position_plus_one = position_plus_one;
+                    }
+                }
+            }
+            if let Some(doc_id_map) = doc_id_map {
+                // this simple variant to remap may consume to much memory
+                doc_id_and_positions
+                    .push((doc_id_map.get_new_doc_id(doc_id), buffer_positions.to_vec()));
+            } else {
+                serializer.write_doc(doc_id, buffer_positions.len() as u32, buffer_positions);
+            }
+        }
+        if doc_id_map.is_some() {
+            doc_id_and_positions.sort_unstable_by_key(|&(doc_id, _)| doc_id);
+            for (doc_id, positions) in doc_id_and_positions {
+                serializer.write_doc(doc_id, positions.len() as u32, &positions);
+            }
+        }
+    }
+}
+
 /// Recorder encoding term frequencies as well as positions.
 #[derive(Clone, Copy, Default)]
 pub struct TfAndPositionRecorder {

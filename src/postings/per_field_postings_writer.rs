@@ -1,6 +1,6 @@
 use crate::postings::json_postings_writer::JsonPostingsWriter;
 use crate::postings::postings_writer::SpecializedPostingsWriter;
-use crate::postings::recorder::{DocIdRecorder, TermFrequencyRecorder, TfAndPositionRecorder};
+use crate::postings::recorder::{DocIdRecorder, TermFrequencyRecorder, PositionRecorder, TfAndPositionRecorder};
 use crate::postings::PostingsWriter;
 use crate::schema::{Field, FieldEntry, FieldType, IndexRecordOption, Schema};
 
@@ -36,6 +36,9 @@ fn posting_writer_from_field_entry(field_entry: &FieldEntry) -> Box<dyn Postings
                 IndexRecordOption::Basic => {
                     SpecializedPostingsWriter::<DocIdRecorder>::default().into()
                 }
+                IndexRecordOption::WithPositions => {
+                    SpecializedPostingsWriter::<PositionRecorder>::default().into()
+                }
                 IndexRecordOption::WithFreqs => {
                     SpecializedPostingsWriter::<TermFrequencyRecorder>::default().into()
                 }
@@ -57,6 +60,9 @@ fn posting_writer_from_field_entry(field_entry: &FieldEntry) -> Box<dyn Postings
                 match text_indexing_option.index_option() {
                     IndexRecordOption::Basic => {
                         JsonPostingsWriter::<DocIdRecorder>::default().into()
+                    }
+                    IndexRecordOption::WithPositions => {
+                        JsonPostingsWriter:<PositionRecorder>::default().into()
                     }
                     IndexRecordOption::WithFreqs => {
                         JsonPostingsWriter::<TermFrequencyRecorder>::default().into()

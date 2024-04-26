@@ -152,13 +152,20 @@ impl SegmentReader {
         let termdict_file = segment.open_read(SegmentComponent::Terms)?;
         let termdict_composite = CompositeFile::open(&termdict_file)?;
 
-        let store_file = segment.open_read(SegmentComponent::Store)?;
+        //const EMPTY_SLICE: &[u8] = &[];
+        let empty_slice: &[u8] = &[];
+
+
+        //let store_file = segment.open_read(SegmentComponent::Store)?;
+        let store_file = FileSlice::from(empty_slice);
+
+
 
         crate::fail_point!("SegmentReader::open#middle");
 
         let postings_file = segment.open_read(SegmentComponent::Postings)?;
         let postings_composite = CompositeFile::open(&postings_file)?;
-
+/**
         let positions_composite = {
             if let Ok(positions_file) = segment.open_read(SegmentComponent::Positions) {
                 CompositeFile::open(&positions_file)?
@@ -166,6 +173,9 @@ impl SegmentReader {
                 CompositeFile::empty()
             }
         };
+*/
+        let positions_composite = CompositeFile::empty();
+
 
         let schema = segment.schema();
 
@@ -258,7 +268,7 @@ impl SegmentReader {
                     field_entry.name()
                 ))
             })?;
-
+/**
         let positions_file = self.positions_composite.open_read(field).ok_or_else(|| {
             let error_msg = format!(
                 "Failed to open field {:?}'s positions in the composite file. Has the schema been \
@@ -267,6 +277,12 @@ impl SegmentReader {
             );
             DataCorruption::comment_only(error_msg)
         })?;
+*/
+
+        //const EMPTY_SLICE: &[u8] = &[];
+        let empty_slice: &[u8] = &[];
+        let positions_file = FileSlice::from(empty_slice);
+        println!("\n---empty positions_file");
 
         let inv_idx_reader = Arc::new(InvertedIndexReader::new(
             TermDictionary::open(termdict_file)?,

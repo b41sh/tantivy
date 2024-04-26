@@ -45,8 +45,8 @@ impl IndexRecordOption {
     ///  term positions.
     pub fn has_positions(self) -> bool {
         match self {
-            IndexRecordOption::Basic | IndexRecordOption::WithPositions | IndexRecordOption::WithFreqs => false,
-            IndexRecordOption::WithFreqsAndPositions => true,
+            IndexRecordOption::Basic | IndexRecordOption::WithFreqs => false,
+            IndexRecordOption::WithPositions | IndexRecordOption::WithFreqsAndPositions => true,
         }
     }
 

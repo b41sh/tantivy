@@ -62,7 +62,7 @@ fn posting_writer_from_field_entry(field_entry: &FieldEntry) -> Box<dyn Postings
                         JsonPostingsWriter::<DocIdRecorder>::default().into()
                     }
                     IndexRecordOption::WithPositions => {
-                        JsonPostingsWriter:<PositionRecorder>::default().into()
+                        JsonPostingsWriter::<PositionRecorder>::default().into()
                     }
                     IndexRecordOption::WithFreqs => {
                         JsonPostingsWriter::<TermFrequencyRecorder>::default().into()

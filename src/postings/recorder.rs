@@ -307,6 +307,14 @@ impl Recorder for PositionRecorder {
             }
         }
     }
+
+    fn term_doc_freq(&self) -> Option<u32> {
+        None
+    }
+
+    fn has_term_freq(&self) -> bool {
+        false
+    }
 }
 
 /// Recorder encoding term frequencies as well as positions.

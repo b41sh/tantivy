@@ -189,20 +189,7 @@ impl SkipReader {
         self.last_doc_in_block = read_u32(bytes);
         let (doc_num_bits, strict_delta_encoded) = decode_bitwidth(bytes[4]);
         match self.skip_info {
-            IndexRecordOption::Basic => {
-                advance_len = 5;
-                self.block_info = BlockInfo::BitPacked {
-                    doc_num_bits,
-                    strict_delta_encoded,
-                    tf_num_bits: 0,
-                    tf_sum: 0,
-                    block_wand_fieldnorm_id: 0,
-                    block_wand_term_freq: 0,
-                };
-            }
-            IndexRecordOption::WithPositions => {
-                println!("\n\n----====----skip read_block_info");
-                // todo
+            IndexRecordOption::Basic | IndexRecordOption::WithPositions => {
                 advance_len = 5;
                 self.block_info = BlockInfo::BitPacked {
                     doc_num_bits,

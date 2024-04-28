@@ -58,8 +58,10 @@ impl IndexRecordOption {
             (WithFreqsAndPositions, WithFreqsAndPositions) => WithFreqsAndPositions,
             (WithFreqs, WithFreqs) => WithFreqs,
             (WithFreqsAndPositions, WithFreqs) => WithFreqs,
-            (WithFreqsAndPositions, WithPositions) => WithPositions,
             (WithFreqs, WithFreqsAndPositions) => WithFreqs,
+            (WithPositions, WithPositions) => WithPositions,
+            (WithFreqsAndPositions, WithPositions) => WithPositions,
+            (WithPositions, WithFreqsAndPositions) => WithPositions,
             _ => Basic,
         }
     }

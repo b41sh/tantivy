@@ -3,7 +3,7 @@ mod term_scorer;
 mod term_weight;
 
 pub use self::term_query::TermQuery;
-pub use self::term_scorer::TermScorer;
+pub use self::term_scorer::{JsonConstraintKey, TermScorer};
 #[cfg(test)]
 mod tests {
 

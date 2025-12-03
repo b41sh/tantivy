@@ -132,12 +132,14 @@ impl TermWeight {
                 segment_postings,
                 fieldnorm_reader,
                 similarity_weight,
+                self.term.clone(),
             ))
         } else {
             Ok(TermScorer::new(
                 SegmentPostings::empty(),
                 fieldnorm_reader,
                 similarity_weight,
+                self.term.clone(),
             ))
         }
     }

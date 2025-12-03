@@ -4,6 +4,8 @@ use std::ops::Range;
 
 use stacker::Addr;
 
+use common::json_path_writer::JsonArrayPathEntry;
+
 use crate::fieldnorm::FieldNormReaders;
 use crate::indexer::path_to_unordered_id::OrderedPathId;
 use crate::postings::recorder::{BufferLender, Recorder};
@@ -111,7 +113,14 @@ pub(crate) trait PostingsWriter: Send + Sync {
     /// * term - the term
     /// * ctx - Contains a term hashmap and a memory arena to store all necessary posting list
     ///   information.
-    fn subscribe(&mut self, doc: DocId, pos: u32, term: &Term, ctx: &mut IndexingContext);
+    fn subscribe(
+        &mut self,
+        doc: DocId,
+        pos: u32,
+        term: &Term,
+        array_path: &[JsonArrayPathEntry],
+        ctx: &mut IndexingContext,
+    );
 
     /// Serializes the postings on disk.
     /// The actual serialization format is handled by the `PostingsSerializer`.
@@ -131,6 +140,7 @@ pub(crate) trait PostingsWriter: Send + Sync {
         term_buffer: &mut Term,
         ctx: &mut IndexingContext,
         indexing_position: &mut IndexingPosition,
+        array_path: &[JsonArrayPathEntry],
     ) {
         let end_of_path_idx = term_buffer.len_bytes();
         let mut num_tokens = 0;
@@ -150,7 +160,7 @@ pub(crate) trait PostingsWriter: Send + Sync {
             term_buffer.append_bytes(token.text.as_bytes());
             let start_position = indexing_position.end_position + token.position as u32;
             end_position = end_position.max(start_position + token.position_length as u32);
-            self.subscribe(doc_id, start_position, term_buffer, ctx);
+            self.subscribe(doc_id, start_position, term_buffer, array_path, ctx);
             num_tokens += 1;
         });
 
@@ -198,7 +208,14 @@ impl<Rec: Recorder> SpecializedPostingsWriter<Rec> {
 
 impl<Rec: Recorder> PostingsWriter for SpecializedPostingsWriter<Rec> {
     #[inline]
-    fn subscribe(&mut self, doc: DocId, position: u32, term: &Term, ctx: &mut IndexingContext) {
+    fn subscribe(
+        &mut self,
+        doc: DocId,
+        position: u32,
+        term: &Term,
+        array_path: &[JsonArrayPathEntry],
+        ctx: &mut IndexingContext,
+    ) {
         debug_assert!(term.serialized_term().len() >= 4);
         self.total_num_tokens += 1;
         let (term_index, arena) = (&mut ctx.term_index, &mut ctx.arena);
@@ -209,12 +226,12 @@ impl<Rec: Recorder> PostingsWriter for SpecializedPostingsWriter<Rec> {
                     recorder.close_doc(arena);
                     recorder.new_doc(doc, arena);
                 }
-                recorder.record_position(position, arena);
+                recorder.record_position(position, array_path, arena);
                 recorder
             } else {
                 let mut recorder = Rec::default();
                 recorder.new_doc(doc, arena);
-                recorder.record_position(position, arena);
+                recorder.record_position(position, array_path, arena);
                 recorder
             }
         });

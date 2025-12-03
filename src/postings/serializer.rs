@@ -1,13 +1,18 @@
 use std::cmp::Ordering;
 use std::io::{self, Write};
 
-use common::{BinarySerializable, CountingWriter, VInt};
+use common::json_path_writer::JsonArrayPathEntry;
+use common::{write_u32_vint, BinarySerializable, CountingWriter, VInt};
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::TermInfo;
 use crate::directory::{CompositeWrite, WritePtr};
 use crate::fieldnorm::FieldNormReader;
 use crate::index::Segment;
-use crate::positions::PositionSerializer;
+use crate::positions::{
+    PositionSerializer, JSON_METADATA_FLAG_BITMAP, JSON_METADATA_FLAG_SINGLE_PATH,
+    JSON_METADATA_FLAG_TWO_PATHS, JSON_METADATA_MARKER,
+};
 use crate::postings::compression::{BlockEncoder, VIntEncoder, COMPRESSION_BLOCK_SIZE};
 use crate::postings::skip::SkipSerializer;
 use crate::query::Bm25Weight;
@@ -108,6 +113,7 @@ pub struct FieldSerializer<'a> {
     positions_serializer_opt: Option<PositionSerializer<&'a mut CountingWriter<WritePtr>>>,
     current_term_info: TermInfo,
     term_open: bool,
+    json_metadata: Option<JsonTermMetadataBuilder>,
 }
 
 impl<'a> FieldSerializer<'a> {
@@ -140,12 +146,20 @@ impl<'a> FieldSerializer<'a> {
             None
         };
 
+        let json_metadata = if matches!(field_type, FieldType::JsonObject(_))
+            && index_record_option.has_positions()
+        {
+            Some(JsonTermMetadataBuilder::default())
+        } else {
+            None
+        };
         Ok(FieldSerializer {
             term_dictionary_builder,
             postings_serializer,
             positions_serializer_opt,
             current_term_info: TermInfo::default(),
             term_open: false,
+            json_metadata,
         })
     }
 
@@ -205,6 +219,21 @@ impl<'a> FieldSerializer<'a> {
         }
     }
 
+    pub fn write_doc_with_json_metadata(
+        &mut self,
+        doc_id: DocId,
+        term_freq: u32,
+        position_deltas: &[u32],
+        metadata: &[Vec<JsonArrayPathEntry>],
+    ) {
+        self.write_doc(doc_id, term_freq, position_deltas);
+        if let Some(builder) = self.json_metadata.as_mut() {
+            builder.add_doc(metadata);
+        } else {
+            debug_assert!(metadata.is_empty());
+        }
+    }
+
     /// Finish the serialization for this term postings.
     ///
     /// If the current block is incomplete, it needs to be encoded
@@ -221,6 +250,11 @@ impl<'a> FieldSerializer<'a> {
 
             if let Some(positions_serializer) = self.positions_serializer_opt.as_mut() {
                 positions_serializer.close_term()?;
+                if let Some(builder) = self.json_metadata.as_mut() {
+                    if let Some(encoded_metadata) = builder.take_encoded_metadata() {
+                        positions_serializer.append_json_metadata(&encoded_metadata)?;
+                    }
+                }
                 self.current_term_info.positions_range.end =
                     positions_serializer.written_bytes() as usize;
             }
@@ -240,6 +274,134 @@ impl<'a> FieldSerializer<'a> {
         self.postings_serializer.close()?;
         self.term_dictionary_builder.finish()?;
         Ok(())
+    }
+}
+
+#[derive(Default)]
+struct JsonTermMetadataBuilder {
+    json_array_paths_map: FxHashMap<Vec<JsonArrayPathEntry>, u32>,
+    json_array_paths_indexes: Vec<Vec<u32>>,
+}
+
+impl JsonTermMetadataBuilder {
+    fn add_doc(&mut self, metadata: &[Vec<JsonArrayPathEntry>]) {
+        let mut indexes = Vec::new();
+        for json_array_path in metadata {
+            let next_index = self.json_array_paths_map.len() as u32;
+            let index = *self
+                .json_array_paths_map
+                .entry(json_array_path.clone())
+                .or_insert(next_index);
+            indexes.push(index);
+        }
+        self.json_array_paths_indexes.push(indexes);
+    }
+
+    fn take_encoded_metadata(&mut self) -> Option<Vec<u8>> {
+        if self.json_array_paths_map.is_empty() {
+            self.json_array_paths_indexes.clear();
+            return None;
+        }
+        if self.json_array_paths_map.len() == 1 && self.json_array_paths_map.contains_key(&[]) {
+            self.json_array_paths_map.clear();
+            self.json_array_paths_indexes.clear();
+            return None;
+        }
+
+        let path_count = self.json_array_paths_map.len();
+        let mut paths = vec![Vec::new(); path_count];
+        for (path, index) in self.json_array_paths_map.drain() {
+            let pos = index as usize;
+            paths[pos] = path;
+        }
+
+        let mut bytes = Vec::new();
+        write_u32_vint(paths.len() as u32, &mut bytes).expect("writing to Vec cannot fail");
+        for path in &paths {
+            write_u32_vint(path.len() as u32, &mut bytes).expect("writing to Vec cannot fail");
+            for entry in path {
+                write_u32_vint(entry.path_id, &mut bytes).expect("writing to Vec cannot fail");
+                write_u32_vint(entry.element_ord, &mut bytes).expect("writing to Vec cannot fail");
+            }
+        }
+
+        let doc_count = self.json_array_paths_indexes.len();
+        write_u32_vint(doc_count as u32, &mut bytes).expect("writing to Vec cannot fail");
+
+        if path_count == 1 {
+        } else if path_count == 2 {
+            let mut packed: u32 = 0;
+            let mut count = 0;
+            for indexes in &self.json_array_paths_indexes {
+                let has_first = indexes.iter().any(|&idx| idx == 0);
+                let has_second = indexes.iter().any(|&idx| idx == 1);
+                let state = match (has_first, has_second) {
+                    (false, false) => 0u32,
+                    (true, false) => 1u32,
+                    (false, true) => 2u32,
+                    (true, true) => 3u32,
+                };
+                packed |= state << (count * 2);
+                count += 1;
+                if count == 16 {
+                    write_u32_vint(packed, &mut bytes).expect("writing to Vec cannot fail");
+                    packed = 0;
+                    count = 0;
+                }
+            }
+            if count > 0 {
+                write_u32_vint(packed, &mut bytes).expect("writing to Vec cannot fail");
+            }
+        } else if path_count <= 4 {
+            let mut count = 0;
+            let bits_per_doc = 4;
+            let docs_per_byte = 8 / bits_per_doc;
+            let docs_per_byte = docs_per_byte.max(1);
+            let mut packed: u8 = 0;
+            let mut bit_pos = 0;
+            for indexes in &self.json_array_paths_indexes {
+                let mut mask = 0u8;
+                for &idx in indexes {
+                    if idx < 4 {
+                        mask |= 1u8 << idx;
+                    }
+                }
+                packed |= mask << bit_pos;
+                bit_pos += bits_per_doc;
+                count += 1;
+                if count == docs_per_byte {
+                    write_u32_vint(packed as u32, &mut bytes).expect("writing to Vec cannot fail");
+                    packed = 0;
+                    bit_pos = 0;
+                    count = 0;
+                }
+            }
+            if count > 0 {
+                write_u32_vint(packed as u32, &mut bytes).expect("writing to Vec cannot fail");
+            }
+        } else if path_count <= 32 {
+            for indexes in &self.json_array_paths_indexes {
+                let mut bitmap: u32 = 0;
+                for &idx in indexes {
+                    if idx < 32 {
+                        bitmap |= 1u32 << idx;
+                    }
+                }
+                write_u32_vint(bitmap, &mut bytes).expect("writing to Vec cannot fail");
+            }
+        } else {
+            for indexes in &self.json_array_paths_indexes {
+                write_u32_vint(indexes.len() as u32, &mut bytes)
+                    .expect("writing to Vec cannot fail");
+                for &idx in indexes {
+                    write_u32_vint(idx, &mut bytes).expect("writing to Vec cannot fail");
+                }
+            }
+        }
+
+        self.json_array_paths_indexes.clear();
+        self.json_array_paths_map.clear();
+        Some(bytes)
     }
 }
 

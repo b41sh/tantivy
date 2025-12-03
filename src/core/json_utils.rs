@@ -122,113 +122,123 @@ pub(crate) fn index_json_value<'a, V: Value<'a>>(
     };
 
     match json_value.as_value() {
-        ReferenceValue::Leaf(leaf) => match leaf {
-            ReferenceValueLeaf::Null => {}
-            ReferenceValueLeaf::Str(val) => {
-                let mut token_stream = text_analyzer.token_stream(val);
-                let unordered_id = ctx
-                    .path_to_unordered_id
-                    .get_or_allocate_unordered_id(json_path_writer.as_str());
+        ReferenceValue::Leaf(leaf) => {
+            let array_path = json_path_writer.array_entries();
+            match leaf {
+                ReferenceValueLeaf::Null => {}
+                ReferenceValueLeaf::Str(val) => {
+                    let mut token_stream = text_analyzer.token_stream(val);
+                    let unordered_id = ctx
+                        .path_to_unordered_id
+                        .get_or_allocate_unordered_id(json_path_writer.as_str());
 
-                // TODO: make sure the chain position works out.
-                set_path_id(term_buffer, unordered_id);
-                set_type(term_buffer, Type::Str);
-                let indexing_position = positions_per_path.get_position_from_id(unordered_id);
-                postings_writer.index_text(
-                    doc,
-                    &mut *token_stream,
-                    term_buffer,
-                    ctx,
-                    indexing_position,
-                );
-            }
-            ReferenceValueLeaf::U64(val) => {
-                // try to parse to i64, since when querying we will apply the same logic and prefer
-                // i64 values
-                set_path_id(
-                    term_buffer,
-                    ctx.path_to_unordered_id
-                        .get_or_allocate_unordered_id(json_path_writer.as_str()),
-                );
-                if let Ok(i64_val) = val.try_into() {
-                    term_buffer.append_type_and_fast_value::<i64>(i64_val);
-                } else {
-                    term_buffer.append_type_and_fast_value::<u64>(val);
+                    // TODO: make sure the chain position works out.
+                    set_path_id(term_buffer, unordered_id);
+                    set_type(term_buffer, Type::Str);
+                    let indexing_position = positions_per_path.get_position_from_id(unordered_id);
+                    postings_writer.index_text(
+                        doc,
+                        &mut *token_stream,
+                        term_buffer,
+                        ctx,
+                        indexing_position,
+                        array_path,
+                    );
                 }
-                postings_writer.subscribe(doc, 0u32, term_buffer, ctx);
-            }
-            ReferenceValueLeaf::I64(val) => {
-                set_path_id(
-                    term_buffer,
-                    ctx.path_to_unordered_id
-                        .get_or_allocate_unordered_id(json_path_writer.as_str()),
-                );
-                term_buffer.append_type_and_fast_value(val);
-                postings_writer.subscribe(doc, 0u32, term_buffer, ctx);
-            }
-            ReferenceValueLeaf::F64(val) => {
-                if !val.is_finite() {
-                    return;
-                };
-                set_path_id(
-                    term_buffer,
-                    ctx.path_to_unordered_id
-                        .get_or_allocate_unordered_id(json_path_writer.as_str()),
-                );
-                // Normalize here is important.
-                // In the inverted index, we coerce all numerical values to their canonical
-                // representation.
-                //
-                // (We do the same thing on the query side)
-                match NumericalValue::F64(val).normalize() {
-                    NumericalValue::I64(val_i64) => {
-                        term_buffer.append_type_and_fast_value::<i64>(val_i64);
+                ReferenceValueLeaf::U64(val) => {
+                    // try to parse to i64, since when querying we will apply the same logic and prefer
+                    // i64 values
+                    set_path_id(
+                        term_buffer,
+                        ctx.path_to_unordered_id
+                            .get_or_allocate_unordered_id(json_path_writer.as_str()),
+                    );
+                    if let Ok(i64_val) = val.try_into() {
+                        term_buffer.append_type_and_fast_value::<i64>(i64_val);
+                    } else {
+                        term_buffer.append_type_and_fast_value::<u64>(val);
                     }
-                    NumericalValue::U64(val_u64) => {
-                        term_buffer.append_type_and_fast_value::<u64>(val_u64);
-                    }
-                    NumericalValue::F64(val_f64) => {
-                        term_buffer.append_type_and_fast_value::<f64>(val_f64);
-                    }
+                    postings_writer.subscribe(doc, 0u32, term_buffer, array_path, ctx);
                 }
-                postings_writer.subscribe(doc, 0u32, term_buffer, ctx);
+                ReferenceValueLeaf::I64(val) => {
+                    set_path_id(
+                        term_buffer,
+                        ctx.path_to_unordered_id
+                            .get_or_allocate_unordered_id(json_path_writer.as_str()),
+                    );
+                    term_buffer.append_type_and_fast_value(val);
+                    postings_writer.subscribe(doc, 0u32, term_buffer, array_path, ctx);
+                }
+                ReferenceValueLeaf::F64(val) => {
+                    if !val.is_finite() {
+                        return;
+                    };
+                    set_path_id(
+                        term_buffer,
+                        ctx.path_to_unordered_id
+                            .get_or_allocate_unordered_id(json_path_writer.as_str()),
+                    );
+                    // Normalize here is important.
+                    // In the inverted index, we coerce all numerical values to their canonical
+                    // representation.
+                    //
+                    // (We do the same thing on the query side)
+                    match NumericalValue::F64(val).normalize() {
+                        NumericalValue::I64(val_i64) => {
+                            term_buffer.append_type_and_fast_value::<i64>(val_i64);
+                        }
+                        NumericalValue::U64(val_u64) => {
+                            term_buffer.append_type_and_fast_value::<u64>(val_u64);
+                        }
+                        NumericalValue::F64(val_f64) => {
+                            term_buffer.append_type_and_fast_value::<f64>(val_f64);
+                        }
+                    }
+                    postings_writer.subscribe(doc, 0u32, term_buffer, array_path, ctx);
+                }
+                ReferenceValueLeaf::Bool(val) => {
+                    set_path_id(
+                        term_buffer,
+                        ctx.path_to_unordered_id
+                            .get_or_allocate_unordered_id(json_path_writer.as_str()),
+                    );
+                    term_buffer.append_type_and_fast_value(val);
+                    postings_writer.subscribe(doc, 0u32, term_buffer, array_path, ctx);
+                }
+                ReferenceValueLeaf::Date(val) => {
+                    set_path_id(
+                        term_buffer,
+                        ctx.path_to_unordered_id
+                            .get_or_allocate_unordered_id(json_path_writer.as_str()),
+                    );
+                    let val = val.truncate(DATE_TIME_PRECISION_INDEXED);
+                    term_buffer.append_type_and_fast_value(val);
+                    postings_writer.subscribe(doc, 0u32, term_buffer, array_path, ctx);
+                }
+                ReferenceValueLeaf::PreTokStr(_) => {
+                    unimplemented!(
+                        "Pre-tokenized string support in dynamic fields is not yet implemented"
+                    )
+                }
+                ReferenceValueLeaf::Bytes(_) => {
+                    unimplemented!("Bytes support in dynamic fields is not yet implemented")
+                }
+                ReferenceValueLeaf::Facet(_) => {
+                    unimplemented!("Facet support in dynamic fields is not yet implemented")
+                }
+                ReferenceValueLeaf::IpAddr(_) => {
+                    unimplemented!("IP address support in dynamic fields is not yet implemented")
+                }
             }
-            ReferenceValueLeaf::Bool(val) => {
-                set_path_id(
-                    term_buffer,
-                    ctx.path_to_unordered_id
-                        .get_or_allocate_unordered_id(json_path_writer.as_str()),
-                );
-                term_buffer.append_type_and_fast_value(val);
-                postings_writer.subscribe(doc, 0u32, term_buffer, ctx);
-            }
-            ReferenceValueLeaf::Date(val) => {
-                set_path_id(
-                    term_buffer,
-                    ctx.path_to_unordered_id
-                        .get_or_allocate_unordered_id(json_path_writer.as_str()),
-                );
-                let val = val.truncate(DATE_TIME_PRECISION_INDEXED);
-                term_buffer.append_type_and_fast_value(val);
-                postings_writer.subscribe(doc, 0u32, term_buffer, ctx);
-            }
-            ReferenceValueLeaf::PreTokStr(_) => {
-                unimplemented!(
-                    "Pre-tokenized string support in dynamic fields is not yet implemented"
-                )
-            }
-            ReferenceValueLeaf::Bytes(_) => {
-                unimplemented!("Bytes support in dynamic fields is not yet implemented")
-            }
-            ReferenceValueLeaf::Facet(_) => {
-                unimplemented!("Facet support in dynamic fields is not yet implemented")
-            }
-            ReferenceValueLeaf::IpAddr(_) => {
-                unimplemented!("IP address support in dynamic fields is not yet implemented")
-            }
-        },
+        }
         ReferenceValue::Array(elements) => {
+            let path_id = ctx
+                .path_to_unordered_id
+                .get_or_allocate_unordered_id(json_path_writer.as_str());
+            json_path_writer.push_array_context(path_id);
+            let mut element_ord: u32 = 0;
             for val in elements {
+                json_path_writer.set_current_array_ordinal(element_ord);
                 index_json_value(
                     doc,
                     val,
@@ -239,7 +249,9 @@ pub(crate) fn index_json_value<'a, V: Value<'a>>(
                     ctx,
                     positions_per_path,
                 );
+                element_ord = element_ord.saturating_add(1);
             }
+            json_path_writer.pop_array_context();
         }
         ReferenceValue::Object(object) => {
             index_json_object::<V>(

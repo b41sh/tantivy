@@ -1,5 +1,7 @@
 use common::HasLen;
 
+use common::json_path_writer::JsonArrayPathEntry;
+
 use crate::docset::DocSet;
 use crate::fastfield::AliveBitSet;
 use crate::positions::PositionReader;
@@ -17,6 +19,8 @@ pub struct SegmentPostings {
     pub(crate) block_cursor: BlockSegmentPostings,
     cur: usize,
     position_reader: Option<PositionReader>,
+    json_metadata: Option<Vec<Vec<JsonArrayPathEntry>>>,
+    positions_scratch: Vec<u32>,
 }
 
 impl SegmentPostings {
@@ -26,6 +30,8 @@ impl SegmentPostings {
             block_cursor: BlockSegmentPostings::empty(),
             cur: 0,
             position_reader: None,
+            json_metadata: None,
+            positions_scratch: Vec::new(),
         }
     }
 
@@ -146,9 +152,15 @@ impl SegmentPostings {
         segment_block_postings: BlockSegmentPostings,
         position_reader: Option<PositionReader>,
     ) -> SegmentPostings {
+        let has_json_metadata = position_reader
+            .as_ref()
+            .map(|reader| reader.has_json_metadata())
+            .unwrap_or(false);
         SegmentPostings {
             block_cursor: segment_block_postings,
             cur: 0, // cursor within the block
+            json_metadata: has_json_metadata.then(|| Vec::new()),
+            positions_scratch: Vec::new(),
             position_reader,
         }
     }
@@ -243,7 +255,33 @@ impl Postings for SegmentPostings {
                 cum += *output_mut;
                 *output_mut = cum;
             }
+            if let Some(json_metadata) = self.json_metadata.as_mut() {
+                if let Some(latest_metadata) = position_reader.last_json_metadata() {
+                    json_metadata.clear();
+                    json_metadata.extend(latest_metadata.iter().cloned());
+                } else {
+                    self.json_metadata = None;
+                }
+            }
         }
+    }
+
+    fn json_array_paths(&mut self) -> Option<&[Vec<JsonArrayPathEntry>]> {
+        if self.json_metadata.is_none() {
+            return None;
+        }
+        let term_freq = self.term_freq() as usize;
+        if term_freq == 0 {
+            if let Some(json_metadata) = self.json_metadata.as_mut() {
+                json_metadata.clear();
+            }
+            return self.json_metadata.as_ref().map(|metadata| metadata.as_slice());
+        }
+        let mut scratch = std::mem::take(&mut self.positions_scratch);
+        scratch.clear();
+        self.append_positions_with_offset(0, &mut scratch);
+        self.positions_scratch = scratch;
+        self.json_metadata.as_ref().map(|metadata| metadata.as_slice())
     }
 }
 

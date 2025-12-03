@@ -2,7 +2,7 @@ use std::io::{self, Write};
 
 use common::{BinarySerializable, CountingWriter, VInt};
 
-use crate::positions::COMPRESSION_BLOCK_SIZE;
+use crate::positions::{COMPRESSION_BLOCK_SIZE, JSON_METADATA_MARKER};
 use crate::postings::compression::{BlockEncoder, VIntEncoder};
 
 /// The PositionSerializer is in charge of serializing all of the positions
@@ -83,6 +83,18 @@ impl<W: io::Write> PositionSerializer<W> {
         self.positions_wrt.write_all(&self.positions_buffer)?;
         self.bit_widths.clear();
         self.positions_buffer.clear();
+        Ok(())
+    }
+
+    /// Appends a metadata chunk specific to JSON fields.
+    pub fn append_json_metadata(&mut self, metadata: &[u8]) -> io::Result<()> {
+        if metadata.is_empty() {
+            return Ok(());
+        }
+        self.positions_wrt.write_all(metadata)?;
+        self.positions_wrt.write_all(&[JSON_METADATA_MARKER])?;
+        self.positions_wrt
+            .write_all(&(metadata.len() as u32).to_be_bytes())?;
         Ok(())
     }
 

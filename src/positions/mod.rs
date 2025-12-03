@@ -37,9 +37,15 @@ pub use self::reader::PositionReader;
 pub use self::serializer::PositionSerializer;
 
 const COMPRESSION_BLOCK_SIZE: usize = BitPacker4x::BLOCK_LEN;
+pub(crate) const JSON_METADATA_MARKER: u8 = 0xFF;
+pub(crate) const JSON_METADATA_FLAG_SINGLE_PATH: u8 = 0x1;
+pub(crate) const JSON_METADATA_FLAG_TWO_PATHS: u8 = 0x2;
+pub(crate) const JSON_METADATA_FLAG_BITMAP: u8 = 0x4;
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use common::json_path_writer::JsonArrayPathEntry;
+    use common::write_u32_vint;
 
     use proptest::prelude::*;
     use proptest::sample::select;
@@ -231,6 +237,72 @@ pub(crate) mod tests {
             position_reader.read(offset, &mut buf);
             assert_eq!(buf[0], offset as u32);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn test_position_reader_json_metadata() -> crate::Result<()> {
+        let mut positions_buffer = vec![];
+        let mut serializer = PositionSerializer::new(&mut positions_buffer);
+        serializer.write_positions_delta(&[1u32, 2u32]);
+        serializer.close_term()?;
+        let mut metadata = Vec::new();
+        metadata.push(0x0); // fallback encoding
+        write_u32_vint(2, &mut metadata).unwrap(); // path count
+        // path 0
+        write_u32_vint(2, &mut metadata).unwrap();
+        write_u32_vint(10, &mut metadata).unwrap();
+        write_u32_vint(0, &mut metadata).unwrap();
+        write_u32_vint(11, &mut metadata).unwrap();
+        write_u32_vint(1, &mut metadata).unwrap();
+        // path 1
+        write_u32_vint(2, &mut metadata).unwrap();
+        write_u32_vint(20, &mut metadata).unwrap();
+        write_u32_vint(2, &mut metadata).unwrap();
+        write_u32_vint(21, &mut metadata).unwrap();
+        write_u32_vint(3, &mut metadata).unwrap();
+        // doc count
+        write_u32_vint(1, &mut metadata).unwrap();
+        // doc 0 entries (two indexes referencing path 0 and 1)
+        write_u32_vint(2, &mut metadata).unwrap();
+        write_u32_vint(0, &mut metadata).unwrap();
+        write_u32_vint(1, &mut metadata).unwrap();
+        serializer.append_json_metadata(&metadata)?;
+        serializer.close()?;
+        let positions_data = OwnedBytes::new(positions_buffer);
+        let mut reader = PositionReader::open(positions_data)?;
+        let mut buf = [0u32; 2];
+        reader.read(0, &mut buf);
+        assert_eq!(buf, [1, 2]);
+        let metadata = reader.last_json_metadata().unwrap();
+        println!("metadata={:?}", metadata);
+        assert_eq!(metadata.len(), 2);
+        assert_eq!(
+            metadata[0],
+            vec![
+                JsonArrayPathEntry {
+                    path_id: 10,
+                    element_ord: 0
+                },
+                JsonArrayPathEntry {
+                    path_id: 11,
+                    element_ord: 1
+                }
+            ]
+        );
+        assert_eq!(
+            metadata[1],
+            vec![
+                JsonArrayPathEntry {
+                    path_id: 20,
+                    element_ord: 2
+                },
+                JsonArrayPathEntry {
+                    path_id: 21,
+                    element_ord: 3
+                }
+            ]
+        );
         Ok(())
     }
 }

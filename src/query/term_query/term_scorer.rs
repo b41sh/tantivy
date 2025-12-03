@@ -1,15 +1,19 @@
+use common::json_path_writer::{JsonArrayPathEntry, JSON_PATH_SEGMENT_SEP};
+
 use crate::docset::DocSet;
 use crate::fieldnorm::FieldNormReader;
 use crate::postings::{FreqReadingOption, Postings, SegmentPostings};
 use crate::query::bm25::Bm25Weight;
 use crate::query::{Explanation, Scorer};
-use crate::{DocId, Score};
+use crate::schema::{Field, Type};
+use crate::{DocId, Score, Term};
 
 #[derive(Clone)]
 pub struct TermScorer {
     postings: SegmentPostings,
     fieldnorm_reader: FieldNormReader,
     similarity_weight: Bm25Weight,
+    term: Term,
 }
 
 impl TermScorer {
@@ -17,11 +21,13 @@ impl TermScorer {
         postings: SegmentPostings,
         fieldnorm_reader: FieldNormReader,
         similarity_weight: Bm25Weight,
+        term: Term,
     ) -> TermScorer {
         TermScorer {
             postings,
             fieldnorm_reader,
             similarity_weight,
+            term,
         }
     }
 
@@ -47,7 +53,9 @@ impl TermScorer {
         let segment_postings =
             SegmentPostings::create_from_docs_and_tfs(doc_and_tfs, Some(fieldnorms));
         let fieldnorm_reader = FieldNormReader::for_test(fieldnorms);
-        TermScorer::new(segment_postings, fieldnorm_reader, similarity_weight)
+        let field = Field::from_field_id(0);
+        let term = Term::from_field_text(field, "test");
+        TermScorer::new(segment_postings, fieldnorm_reader, similarity_weight, term)
     }
 
     /// See `FreqReadingOption`.
@@ -76,6 +84,14 @@ impl TermScorer {
 
     pub fn term_freq(&self) -> u32 {
         self.postings.term_freq()
+    }
+
+    pub fn json_array_paths(&mut self) -> Option<&[Vec<JsonArrayPathEntry>]> {
+        self.postings.json_array_paths()
+    }
+
+    pub fn json_constraint_key(&self) -> Option<JsonConstraintKey> {
+        JsonConstraintKey::from_term(&self.term)
     }
 
     pub fn fieldnorm_id(&self) -> u8 {
@@ -120,6 +136,43 @@ impl Scorer for TermScorer {
         let fieldnorm_id = self.fieldnorm_id();
         let term_freq = self.term_freq();
         self.similarity_weight.score(fieldnorm_id, term_freq)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct JsonConstraintKey {
+    field: Field,
+    parent_path: Vec<u8>,
+}
+
+impl JsonConstraintKey {
+    fn from_term(term: &Term) -> Option<Self> {
+        if term.typ() != Type::Json {
+            return None;
+        }
+        let binding = term.value();
+        let (path_bytes, _) = binding.as_json()?;
+        if path_bytes.is_empty() {
+            return None;
+        }
+        let path = &path_bytes[..path_bytes.len() - 1];
+        let parent_path = if let Some(pos) = path.iter().rposition(|b| *b == JSON_PATH_SEGMENT_SEP) {
+            path[..pos].to_vec()
+        } else {
+            Vec::new()
+        };
+        Some(JsonConstraintKey {
+            field: term.field(),
+            parent_path,
+        })
+    }
+
+    pub fn field(&self) -> Field {
+        self.field
+    }
+
+    pub fn parent_path(&self) -> &[u8] {
+        &self.parent_path
     }
 }
 

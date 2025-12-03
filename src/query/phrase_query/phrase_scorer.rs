@@ -1,5 +1,7 @@
 use std::cmp::Ordering;
 
+use common::json_path_writer::JsonArrayPathEntry;
+
 use crate::docset::{DocSet, TERMINATED};
 use crate::fieldnorm::FieldNormReader;
 use crate::postings::Postings;

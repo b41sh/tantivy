@@ -11,12 +11,20 @@ pub const JSON_END_OF_PATH: u8 = 0u8;
 pub const JSON_END_OF_PATH_STR: &str =
     unsafe { std::str::from_utf8_unchecked(&[JSON_END_OF_PATH]) };
 
+/// Helper that records the current json path and associated array context.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
+pub struct JsonArrayPathEntry {
+    pub path_id: u32,
+    pub element_ord: u32,
+}
+
 /// Create a new JsonPathWriter, that creates flattened json paths for tantivy.
 #[derive(Clone, Debug, Default)]
 pub struct JsonPathWriter {
     path: String,
     indices: Vec<usize>,
     expand_dots: bool,
+    array_entries: Vec<JsonArrayPathEntry>,
 }
 
 impl JsonPathWriter {
@@ -25,6 +33,7 @@ impl JsonPathWriter {
             path: String::new(),
             indices: Vec::new(),
             expand_dots,
+            array_entries: Vec::new(),
         }
     }
 
@@ -33,6 +42,7 @@ impl JsonPathWriter {
             path: String::new(),
             indices: Vec::new(),
             expand_dots: false,
+            array_entries: Vec::new(),
         }
     }
 
@@ -88,12 +98,48 @@ impl JsonPathWriter {
     pub fn clear(&mut self) {
         self.path.clear();
         self.indices.clear();
+        self.array_entries.clear();
     }
 
     /// Get the current path.
     #[inline]
     pub fn as_str(&self) -> &str {
         &self.path
+    }
+
+    /// Push a new array context for the current path.
+    #[inline]
+    pub fn push_array_context(&mut self, path_id: u32) {
+        self.array_entries.push(JsonArrayPathEntry {
+            path_id,
+            element_ord: 0,
+        });
+    }
+
+    /// Update the element ordinal for the most recent array entry.
+    #[inline]
+    pub fn set_current_array_ordinal(&mut self, element_ord: u32) {
+        if let Some(entry) = self.array_entries.last_mut() {
+            entry.element_ord = element_ord;
+        }
+    }
+
+    /// Pop the last array context.
+    #[inline]
+    pub fn pop_array_context(&mut self) {
+        self.array_entries.pop();
+    }
+
+    /// Returns the current stack of array contexts.
+    #[inline]
+    pub fn array_entries(&self) -> &[JsonArrayPathEntry] {
+        &self.array_entries
+    }
+
+    /// Clears all array context entries.
+    #[inline]
+    pub fn clear_array_entries(&mut self) {
+        self.array_entries.clear();
     }
 }
 
@@ -140,5 +186,42 @@ mod tests {
         assert_eq!(json_writer.as_str(), "hello\x01color\x01hue");
         json_writer.pop();
         assert_eq!(json_writer.as_str(), "hello");
+    }
+
+    #[test]
+    fn test_json_path_array_context() {
+        let mut writer = JsonPathWriter::default();
+        writer.push("k1");
+        writer.push_array_context(10);
+        assert_eq!(
+            writer.array_entries(),
+            &[JsonArrayPathEntry {
+                path_id: 10,
+                element_ord: 0
+            }]
+        );
+        writer.set_current_array_ordinal(2);
+        assert_eq!(writer.array_entries()[0].element_ord, 2);
+        writer.push_array_context(10);
+        writer.set_current_array_ordinal(5);
+        assert_eq!(
+            writer.array_entries(),
+            [
+                JsonArrayPathEntry {
+                    path_id: 10,
+                    element_ord: 2
+                },
+                JsonArrayPathEntry {
+                    path_id: 10,
+                    element_ord: 5
+                }
+            ]
+        );
+        writer.pop_array_context();
+        writer.pop_array_context();
+        assert!(writer.array_entries().is_empty());
+        writer.clear();
+        assert!(writer.array_entries().is_empty());
+        assert_eq!(writer.as_str(), "");
     }
 }

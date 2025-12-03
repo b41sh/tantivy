@@ -15,9 +15,10 @@ use super::logical_ast::*;
 use crate::index::Index;
 use crate::json_utils::convert_to_fast_value_and_append_to_json_term;
 use crate::query::range_query::{is_type_valid_for_fastfield_range_query, RangeQuery};
+use crate::query::term_query::JsonConstraintKey;
 use crate::query::{
-    AllQuery, BooleanQuery, BoostQuery, EmptyQuery, FuzzyTermQuery, Occur, PhrasePrefixQuery,
-    PhraseQuery, Query, RegexQuery, TermQuery, TermSetQuery,
+    AllQuery, BooleanQuery, BoostQuery, EmptyQuery, FuzzyTermQuery, JsonQuery, Occur,
+    PhrasePrefixQuery, PhraseQuery, Query, RegexQuery, TermQuery, TermSetQuery,
 };
 use crate::schema::{
     Facet, FacetParseError, Field, FieldType, IndexRecordOption, IntoIpv6Addr, JsonObjectOptions,
@@ -1057,6 +1058,13 @@ fn generate_literals_for_json_object(
 fn convert_to_query(fuzzy: &FxHashMap<Field, Fuzzy>, logical_ast: LogicalAst) -> Box<dyn Query> {
     match trim_ast(logical_ast) {
         Some(LogicalAst::Clause(trimmed_clause)) => {
+            if should_build_json_query(&trimmed_clause) {
+                let subqueries = trimmed_clause
+                    .into_iter()
+                    .map(|(_occur, subquery)| convert_to_query(fuzzy, subquery))
+                    .collect();
+                return Box::new(JsonQuery::new(subqueries));
+            }
             let occur_subqueries = trimmed_clause
                 .into_iter()
                 .map(|(occur, subquery)| (occur, convert_to_query(fuzzy, subquery)))
@@ -1076,6 +1084,53 @@ fn convert_to_query(fuzzy: &FxHashMap<Field, Fuzzy>, logical_ast: LogicalAst) ->
             Box::new(boosted_query)
         }
         None => Box::new(EmptyQuery),
+    }
+}
+
+fn should_build_json_query(clause: &[(Occur, LogicalAst)]) -> bool {
+    if clause.len() <= 1 {
+        return false;
+    }
+    let mut constraint_key: Option<JsonConstraintKey> = None;
+    for (occur, ast) in clause {
+        if *occur != Occur::Must {
+            return false;
+        }
+        let Some(key) = json_constraint_key_from_ast(ast) else {
+            return false;
+        };
+        match &constraint_key {
+            Some(existing) if existing != &key => return false,
+            None => constraint_key = Some(key),
+            _ => {}
+        }
+    }
+    constraint_key.is_some()
+}
+
+fn json_constraint_key_from_ast(ast: &LogicalAst) -> Option<JsonConstraintKey> {
+    match ast {
+        LogicalAst::Leaf(literal) => json_constraint_key_from_literal(literal),
+        LogicalAst::Boost(inner, _) => json_constraint_key_from_ast(inner),
+        LogicalAst::Clause(_) => None,
+    }
+}
+
+fn json_constraint_key_from_literal(literal: &LogicalLiteral) -> Option<JsonConstraintKey> {
+    match literal {
+        LogicalLiteral::Term(term) => JsonConstraintKey::from_term(term),
+        LogicalLiteral::Phrase { terms, .. } => {
+            let (_, first_term) = terms.first()?;
+            let first_key = JsonConstraintKey::from_term(first_term)?;
+            for (_, term) in terms.iter().skip(1) {
+                let other = JsonConstraintKey::from_term(term)?;
+                if other != first_key {
+                    return None;
+                }
+            }
+            Some(first_key)
+        }
+        _ => None,
     }
 }
 

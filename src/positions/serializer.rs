@@ -1,8 +1,9 @@
 use std::io::{self, Write};
 
-use common::{BinarySerializable, CountingWriter, VInt};
+use common::json_path_writer::JsonArrayPathEntry;
+use common::{write_u32_vint, BinarySerializable, CountingWriter, VInt};
 
-use crate::positions::COMPRESSION_BLOCK_SIZE;
+use crate::positions::{COMPRESSION_BLOCK_SIZE, JSON_METADATA_MARKER, JSON_PATH_TABLE_MARKER};
 use crate::postings::compression::{BlockEncoder, VIntEncoder};
 
 /// The PositionSerializer is in charge of serializing all of the positions
@@ -83,6 +84,45 @@ impl<W: io::Write> PositionSerializer<W> {
         self.positions_wrt.write_all(&self.positions_buffer)?;
         self.bit_widths.clear();
         self.positions_buffer.clear();
+        Ok(())
+    }
+
+    /// Appends a metadata chunk specific to JSON fields.
+    ///
+    /// The bytes are followed by a marker and length so `PositionReader` can
+    /// peel them off when opening a term.
+    pub fn append_json_metadata(&mut self, metadata: &[u8]) -> io::Result<()> {
+        if metadata.is_empty() {
+            return Ok(());
+        }
+        self.positions_wrt.write_all(metadata)?;
+        self.positions_wrt.write_all(&[JSON_METADATA_MARKER])?;
+        self.positions_wrt
+            .write_all(&(metadata.len() as u32).to_be_bytes())?;
+        Ok(())
+    }
+
+    /// Writes the global JSON path table once per field, after all terms.
+    ///
+    /// Entry 0 is the empty path; additional entries map compact path ids back to
+    /// concrete `JsonArrayPathEntry` sequences.
+    pub fn append_json_path_table(&mut self, paths: &[Vec<JsonArrayPathEntry>]) -> io::Result<()> {
+        if paths.len() <= 1 {
+            return Ok(());
+        }
+        let mut buffer = Vec::new();
+        write_u32_vint(paths.len() as u32, &mut buffer).expect("writing to Vec cannot fail");
+        for path in paths {
+            write_u32_vint(path.len() as u32, &mut buffer).expect("writing to Vec cannot fail");
+            for entry in path {
+                write_u32_vint(entry.path_id, &mut buffer).expect("writing to Vec cannot fail");
+                write_u32_vint(entry.element_ord, &mut buffer).expect("writing to Vec cannot fail");
+            }
+        }
+        self.positions_wrt.write_all(&buffer)?;
+        self.positions_wrt.write_all(&[JSON_PATH_TABLE_MARKER])?;
+        self.positions_wrt
+            .write_all(&(buffer.len() as u32).to_be_bytes())?;
         Ok(())
     }
 

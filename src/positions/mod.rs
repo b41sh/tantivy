@@ -37,10 +37,15 @@ pub use self::reader::PositionReader;
 pub use self::serializer::PositionSerializer;
 
 const COMPRESSION_BLOCK_SIZE: usize = BitPacker4x::BLOCK_LEN;
+pub(crate) const JSON_METADATA_MARKER: u8 = 0xFF;
+pub(crate) const JSON_PATH_TABLE_MARKER: u8 = 0xFE;
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use std::sync::Arc;
 
+    use common::json_path_writer::JsonArrayPathEntry;
+    use common::write_u32_vint;
     use proptest::prelude::*;
     use proptest::sample::select;
 
@@ -72,7 +77,7 @@ pub(crate) mod tests {
         #[test]
         fn test_position_delta(delta_positions in gen_delta_positions()) {
             let delta_positions_data = create_positions_data(&delta_positions).unwrap();
-            let mut position_reader = PositionReader::open(delta_positions_data).unwrap();
+        let mut position_reader = PositionReader::open(delta_positions_data, None).unwrap();
             let mut minibuf = [0u32; 1];
             for (offset, &delta_position) in delta_positions.iter().enumerate() {
                 position_reader.read(offset as u64, &mut minibuf[..]);
@@ -86,7 +91,7 @@ pub(crate) mod tests {
         let position_deltas: Vec<u32> = (0..1000).collect();
         let positions_data = create_positions_data(&position_deltas[..])?;
         assert_eq!(positions_data.len(), 1224);
-        let mut position_reader = PositionReader::open(positions_data)?;
+        let mut position_reader = PositionReader::open(positions_data, None)?;
         for &n in &[1, 10, 127, 128, 130, 312] {
             let mut v = vec![0u32; n];
             position_reader.read(0, &mut v[..]);
@@ -104,7 +109,7 @@ pub(crate) mod tests {
         serializer.close_term()?;
         serializer.close()?;
         let position_delta = OwnedBytes::new(positions_buffer);
-        assert!(PositionReader::open(position_delta).is_ok());
+        assert!(PositionReader::open(position_delta, None).is_ok());
         Ok(())
     }
 
@@ -119,7 +124,7 @@ pub(crate) mod tests {
         serializer.close()?;
         let position_delta = OwnedBytes::new(positions_buffer);
         let mut output_delta_pos_buffer = [0u32; 5];
-        let mut position_reader = PositionReader::open(position_delta)?;
+        let mut position_reader = PositionReader::open(position_delta, None)?;
         position_reader.read(0, &mut output_delta_pos_buffer[..]);
         assert_eq!(
             &output_delta_pos_buffer[..],
@@ -133,7 +138,7 @@ pub(crate) mod tests {
         let position_deltas: Vec<u32> = (0..1000).collect();
         let positions_data = create_positions_data(&position_deltas[..])?;
         assert_eq!(positions_data.len(), 1224);
-        let mut position_reader = PositionReader::open(positions_data)?;
+        let mut position_reader = PositionReader::open(positions_data, None)?;
         for &offset in &[1u64, 10u64, 127u64, 128u64, 130u64, 312u64] {
             for &len in &[1, 10, 130, 500] {
                 let mut v = vec![0u32; len];
@@ -152,7 +157,7 @@ pub(crate) mod tests {
         let positions_data = create_positions_data(&position_deltas[..])?;
         assert_eq!(positions_data.len(), 1224);
 
-        let mut position_reader = PositionReader::open(positions_data)?;
+        let mut position_reader = PositionReader::open(positions_data, None)?;
         let mut buf = [0u32; 7];
         let mut c = 0;
 
@@ -174,7 +179,7 @@ pub(crate) mod tests {
         let positions_delta: Vec<u32> = (0..2_000_000).collect();
         let positions_data = create_positions_data(&positions_delta[..])?;
         assert_eq!(positions_data.len(), 5003499);
-        let mut position_reader = PositionReader::open(positions_data)?;
+        let mut position_reader = PositionReader::open(positions_data, None)?;
         let mut buf = [0u32; 256];
         position_reader.read(128, &mut buf);
         for i in 0..256 {
@@ -193,7 +198,7 @@ pub(crate) mod tests {
         let positions_data = create_positions_data(&positions_delta[..])?;
         assert_eq!(positions_data.len(), 533);
         let mut buf = [0u32; 1];
-        let mut position_reader = PositionReader::open(positions_data)?;
+        let mut position_reader = PositionReader::open(positions_data, None)?;
         position_reader.read(230, &mut buf);
         assert_eq!(buf[0], 230);
         position_reader.read(9, &mut buf);
@@ -207,7 +212,7 @@ pub(crate) mod tests {
         let positions_delta: Vec<u32> = std::iter::repeat_n(CONST_VAL, 2_000_000).collect();
         let positions_data = create_positions_data(&positions_delta[..])?;
         assert_eq!(positions_data.len(), 1_015_627);
-        let mut position_reader = PositionReader::open(positions_data)?;
+        let mut position_reader = PositionReader::open(positions_data, None)?;
         let mut buf = [0u32; 1];
         position_reader.read(0, &mut buf);
         assert_eq!(buf[0], CONST_VAL);
@@ -226,11 +231,59 @@ pub(crate) mod tests {
             128 * 1024 + 7,
             128 * 10 * 1024 + 10,
         ] {
-            let mut position_reader = PositionReader::open(positions_data.clone())?;
+            let mut position_reader = PositionReader::open(positions_data.clone(), None)?;
             let mut buf = [0u32; 1];
             position_reader.read(offset, &mut buf);
             assert_eq!(buf[0], offset as u32);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn test_position_reader_json_metadata_v1() -> crate::Result<()> {
+        let mut positions_buffer = vec![];
+        let mut serializer = PositionSerializer::new(&mut positions_buffer);
+        serializer.write_positions_delta(&[1u32, 2u32]);
+        serializer.close_term()?;
+        let mut metadata = Vec::new();
+        write_u32_vint(1, &mut metadata).unwrap(); // version marker
+        write_u32_vint(3, &mut metadata).unwrap(); // doc count
+                                                   // counts
+        write_u32_vint(0, &mut metadata).unwrap(); // num blocks
+                                                   // remainder counts
+        write_u32_vint(1, &mut metadata).unwrap();
+        write_u32_vint(1, &mut metadata).unwrap();
+        write_u32_vint(0, &mut metadata).unwrap();
+        write_u32_vint(2, &mut metadata).unwrap(); // total indexes
+        write_u32_vint(0, &mut metadata).unwrap(); // num index blocks
+        write_u32_vint(1, &mut metadata).unwrap();
+        write_u32_vint(1, &mut metadata).unwrap();
+        serializer.append_json_metadata(&metadata)?;
+        serializer.close()?;
+        let positions_data = OwnedBytes::new(positions_buffer);
+        let global_paths = vec![
+            Vec::new(),
+            vec![JsonArrayPathEntry {
+                path_id: 30,
+                element_ord: 0,
+            }],
+        ];
+        let global_paths_arc: Vec<Arc<[JsonArrayPathEntry]>> = global_paths
+            .into_iter()
+            .map(|path| Arc::from(path.into_boxed_slice()))
+            .collect();
+        let mut reader = PositionReader::open(positions_data, Some(Arc::new(global_paths_arc)))?;
+        let mut metadata_paths = Vec::new();
+        assert!(reader.fill_doc_json_metadata_refs(10, 0, &mut metadata_paths));
+        assert_eq!(metadata_paths.len(), 1);
+        assert_eq!(metadata_paths[0][0].path_id, 30);
+        metadata_paths.clear();
+        assert!(reader.fill_doc_json_metadata_refs(20, 1, &mut metadata_paths));
+        assert_eq!(metadata_paths.len(), 1);
+        assert_eq!(metadata_paths[0][0].element_ord, 0);
+        metadata_paths.clear();
+        assert!(!reader.fill_doc_json_metadata_refs(30, 2, &mut metadata_paths));
+        assert!(metadata_paths.is_empty());
         Ok(())
     }
 }

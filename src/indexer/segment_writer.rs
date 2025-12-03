@@ -188,6 +188,7 @@ impl SegmentWriter {
                             term_buffer,
                             ctx,
                             &mut indexing_position,
+                            &[],
                         );
                     }
                 }
@@ -213,6 +214,7 @@ impl SegmentWriter {
                             term_buffer,
                             ctx,
                             &mut indexing_position,
+                            &[],
                         );
                     }
                     if field_entry.has_fieldnorms() {
@@ -228,7 +230,7 @@ impl SegmentWriter {
                         num_vals += 1;
                         let u64_val = value.as_u64().ok_or_else(make_schema_error)?;
                         term_buffer.set_u64(u64_val);
-                        postings_writer.subscribe(doc_id, 0u32, term_buffer, ctx);
+                        postings_writer.subscribe(doc_id, 0u32, term_buffer, &[], ctx);
                     }
                     if field_entry.has_fieldnorms() {
                         self.fieldnorms_writer.record(doc_id, field, num_vals);
@@ -243,7 +245,7 @@ impl SegmentWriter {
                         let date_val = value.as_datetime().ok_or_else(make_schema_error)?;
                         term_buffer
                             .set_u64(date_val.truncate(DATE_TIME_PRECISION_INDEXED).to_u64());
-                        postings_writer.subscribe(doc_id, 0u32, term_buffer, ctx);
+                        postings_writer.subscribe(doc_id, 0u32, term_buffer, &[], ctx);
                     }
                     if field_entry.has_fieldnorms() {
                         self.fieldnorms_writer.record(doc_id, field, num_vals);
@@ -257,7 +259,7 @@ impl SegmentWriter {
                         num_vals += 1;
                         let i64_val = value.as_i64().ok_or_else(make_schema_error)?;
                         term_buffer.set_i64(i64_val);
-                        postings_writer.subscribe(doc_id, 0u32, term_buffer, ctx);
+                        postings_writer.subscribe(doc_id, 0u32, term_buffer, &[], ctx);
                     }
                     if field_entry.has_fieldnorms() {
                         self.fieldnorms_writer.record(doc_id, field, num_vals);
@@ -270,7 +272,7 @@ impl SegmentWriter {
                         num_vals += 1;
                         let f64_val = value.as_f64().ok_or_else(make_schema_error)?;
                         term_buffer.set_f64(f64_val);
-                        postings_writer.subscribe(doc_id, 0u32, term_buffer, ctx);
+                        postings_writer.subscribe(doc_id, 0u32, term_buffer, &[], ctx);
                     }
                     if field_entry.has_fieldnorms() {
                         self.fieldnorms_writer.record(doc_id, field, num_vals);
@@ -283,7 +285,7 @@ impl SegmentWriter {
                         num_vals += 1;
                         let bool_val = value.as_bool().ok_or_else(make_schema_error)?;
                         term_buffer.set_bool(bool_val);
-                        postings_writer.subscribe(doc_id, 0u32, term_buffer, ctx);
+                        postings_writer.subscribe(doc_id, 0u32, term_buffer, &[], ctx);
                     }
                     if field_entry.has_fieldnorms() {
                         self.fieldnorms_writer.record(doc_id, field, num_vals);
@@ -296,7 +298,7 @@ impl SegmentWriter {
                         num_vals += 1;
                         let bytes = value.as_bytes().ok_or_else(make_schema_error)?;
                         term_buffer.set_bytes(bytes);
-                        postings_writer.subscribe(doc_id, 0u32, term_buffer, ctx);
+                        postings_writer.subscribe(doc_id, 0u32, term_buffer, &[], ctx);
                     }
                     if field_entry.has_fieldnorms() {
                         self.fieldnorms_writer.record(doc_id, field, num_vals);
@@ -332,7 +334,7 @@ impl SegmentWriter {
                         num_vals += 1;
                         let ip_addr = value.as_ip_addr().ok_or_else(make_schema_error)?;
                         term_buffer.set_ip_addr(ip_addr);
-                        postings_writer.subscribe(doc_id, 0u32, term_buffer, ctx);
+                        postings_writer.subscribe(doc_id, 0u32, term_buffer, &[], ctx);
                     }
                     if field_entry.has_fieldnorms() {
                         self.fieldnorms_writer.record(doc_id, field, num_vals);

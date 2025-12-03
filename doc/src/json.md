@@ -103,28 +103,58 @@ The user can still target the JSON field by specifying its name explicitly:
 
 Json field do not support range queries.
 
-## Arrays do not work like nested object
+## Arrays and nested semantics
 
-If json object contains an array, a search query might return more documents
-than what might be expected.
+### Tantivy original design
 
-Let's take an example.
+In upstream tantivy, JSON fields are flattened into path+value tokens. Array elements only carry
+their path prefix (e.g. `cart.product_type`, `cart.attributes.color`). The inverted index does not
+remember that two terms came from the same array element, so AND queries may match across elements:
 
 ```json
 {
-    "cart_id": 3234234 ,
+    "cart_id": 3234234,
     "cart": [
-        {"product_type": "sneakers", "attributes": {"color": "white"} },
-        {"product_type": "t-shirt", "attributes": {"color": "red"}},
+        {"product_type": "sneakers", "attributes": {"color": "white"}},
+        {"product_type": "t-shirt", "attributes": {"color": "red"}}
     ]
 }
 ```
 
-Despite the array structure, a document in tantivy is a bag of terms.
-The query:
+The query `cart.product_type:sneakers AND cart.attributes.color:red` matches the document above even
+though the two terms come from different array elements, because the index cannot distinguish them.
 
-```rust
-cart.product_type:sneakers AND cart.attributes.color:red
-```
+### Databend design
 
-Actually match the document above.
+To enforce “same array element” semantics, the Databend fork records the JSON array path for each
+position and intersects paths at query time:
+
+- Indexing: A global path table (a list of deduped paths: `path_id` + `element_ord`) is written into the end of position file, and for each term position, in addition to the standard position delta, the additional array path index metadata is written into the end of term position.
+- Query: When TermScorer/PhraseScorer reads positions, they include array path metadata. `JsonConstraintScorer` performs path intersection across multiple terms, considering them matched only when they point to the same array element.
+
+With this, only `sneakers` + `white` (same element) match; `sneakers` + `red` (different elements)
+are filtered out.
+
+#### Encoding details
+
+To keep compatibility, path metadata is appended after the existing positions encoding:
+
+- **Path table**: written once per field at the end of the positions file (guarded by
+  `JSON_PATH_TABLE_MARKER`), mapping compact ids to concrete paths (`Vec<JsonArrayPathEntry>`);
+  index 0 is the empty path.
+- **Per-term metadata**: appended after a term’s positions data, formatted as:
+  - version (vint, currently 1)
+  - `num_docs` (vint)
+  - `counts`: bitpacked blocks of paths-per-doc (includes block count, bit widths, block bytes,
+    plus vint remainder)
+  - `total_indexes` (vint)
+  - `indexes`: flattened path ids, bitpacked with vint remainder
+  - trailer marker `JSON_METADATA_MARKER` + 4-byte length so `PositionReader` can trim the tail.
+- **Positions body**: unchanged block bitpacking (128 per block) / vint encoding; metadata lives at
+  the tail, so older codecs can ignore it.
+- **Read flow**: `PositionReader::open` checks the tail marker, parses metadata if present, and keeps
+  a path table reference; `SegmentPostings` later calls `fill_doc_json_metadata_refs` to decode
+  the paths for a given `doc_ord`.
+
+With the “unchanged body + marked trailer” layout, older readers remain compatible, while newer
+readers can leverage the metadata for correct array semantics.

@@ -31,6 +31,7 @@ pub struct BlockSegmentPostings {
     doc_freq: u32,
     data: OwnedBytes,
     skip_reader: SkipReader,
+    block_doc_range_start: u32,
 }
 
 fn decode_bitpacked_block(
@@ -134,6 +135,7 @@ impl BlockSegmentPostings {
             doc_freq,
             data: postings_data,
             skip_reader,
+            block_doc_range_start: 0,
         };
         block_segment_postings.load_block();
         Ok(block_segment_postings)
@@ -198,6 +200,7 @@ impl BlockSegmentPostings {
         self.data = postings_data;
         self.block_max_score_cache = None;
         self.block_loaded = false;
+        self.block_doc_range_start = 0;
         if let Some(skip_data) = skip_data_opt {
             self.skip_reader.reset(skip_data, doc_freq);
         } else {
@@ -215,6 +218,10 @@ impl BlockSegmentPostings {
     /// length, and it does not take in account deleted documents.
     pub fn doc_freq(&self) -> u32 {
         self.doc_freq
+    }
+
+    pub(crate) fn block_doc_range_start(&self) -> u32 {
+        self.block_doc_range_start
     }
 
     /// Returns the array of docs in the current block.
@@ -307,6 +314,9 @@ impl BlockSegmentPostings {
         if self.block_is_loaded() {
             return;
         }
+        self.block_doc_range_start = self
+            .doc_freq
+            .saturating_sub(self.skip_reader.remaining_docs());
         match self.skip_reader.block_info() {
             BlockInfo::BitPacked {
                 doc_num_bits,
@@ -371,6 +381,7 @@ impl BlockSegmentPostings {
             doc_freq: 0,
             data: OwnedBytes::empty(),
             skip_reader: SkipReader::new(OwnedBytes::empty(), 0, IndexRecordOption::Basic),
+            block_doc_range_start: 0,
         }
     }
 

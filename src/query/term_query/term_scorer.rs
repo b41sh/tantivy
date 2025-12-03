@@ -1,9 +1,14 @@
+use std::sync::Arc;
+
+use common::json_path_writer::JsonArrayPathEntry;
+
 use crate::docset::DocSet;
 use crate::fieldnorm::FieldNormReader;
 use crate::postings::{FreqReadingOption, Postings, SegmentPostings};
 use crate::query::bm25::Bm25Weight;
-use crate::query::{Explanation, Scorer};
-use crate::{DocId, Score};
+use crate::query::{Explanation, JsonPathScorer, Scorer};
+use crate::schema::{Field, Type};
+use crate::{DocId, Score, Term};
 
 #[derive(Clone)]
 pub struct TermScorer {
@@ -78,6 +83,10 @@ impl TermScorer {
         self.postings.term_freq()
     }
 
+    pub fn json_array_paths(&mut self) -> Option<&[Arc<[JsonArrayPathEntry]>]> {
+        self.postings.json_array_paths()
+    }
+
     pub fn fieldnorm_id(&self) -> u8 {
         self.fieldnorm_reader.fieldnorm_id(self.doc())
     }
@@ -120,6 +129,30 @@ impl Scorer for TermScorer {
         let fieldnorm_id = self.fieldnorm_id();
         let term_freq = self.term_freq();
         self.similarity_weight.score(fieldnorm_id, term_freq)
+    }
+}
+
+impl JsonPathScorer for TermScorer {
+    fn json_array_paths_dyn(&mut self) -> Option<&[Arc<[JsonArrayPathEntry]>]> {
+        self.json_array_paths()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct JsonConstraintKey {
+    field: Field,
+}
+
+impl JsonConstraintKey {
+    pub fn from_term(term: &Term) -> Option<Self> {
+        if term.typ() != Type::Json {
+            return None;
+        }
+        // Only the field matters for grouping; path-level filtering is enforced later by
+        // intersecting actual array paths at query time.
+        Some(JsonConstraintKey {
+            field: term.field(),
+        })
     }
 }
 

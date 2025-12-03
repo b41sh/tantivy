@@ -1,11 +1,15 @@
 use std::cmp::Ordering;
+use std::sync::Arc;
 
-use crate::docset::{DocSet, TERMINATED};
+use common::json_path_writer::JsonArrayPathEntry;
+
+use crate::docset::DocSet;
 use crate::fieldnorm::FieldNormReader;
-use crate::postings::Postings;
+use crate::postings::{Postings, SegmentPostings};
 use crate::query::bm25::Bm25Weight;
-use crate::query::{Intersection, Scorer};
-use crate::{DocId, Score};
+use crate::query::term_query::JsonConstraintKey;
+use crate::query::{Intersection, JsonPathScorer, Scorer};
+use crate::{DocId, Score, TERMINATED};
 
 struct PostingsWithOffset<TPostings> {
     offset: u32,
@@ -22,6 +26,10 @@ impl<TPostings: Postings> PostingsWithOffset<TPostings> {
 
     pub fn positions(&mut self, output: &mut Vec<u32>) {
         self.postings.positions_with_offset(self.offset, output)
+    }
+
+    pub fn postings_mut(&mut self) -> &mut TPostings {
+        &mut self.postings
     }
 }
 
@@ -55,6 +63,8 @@ pub struct PhraseScorer<TPostings: Postings> {
     left_slops: Vec<u8>,
     positions_buffer: Vec<u32>,
     slops_buffer: Vec<u8>,
+    json_metadata: Option<Vec<Arc<[JsonArrayPathEntry]>>>,
+    json_metadata_doc: Option<DocId>,
 }
 
 /// Returns true if and only if the two sorted arrays contain a common element
@@ -351,6 +361,7 @@ impl<TPostings: Postings> PhraseScorer<TPostings> {
         similarity_weight_opt: Option<Bm25Weight>,
         fieldnorm_reader: FieldNormReader,
         slop: u32,
+        json_constraint_key: Option<JsonConstraintKey>,
     ) -> PhraseScorer<TPostings> {
         Self::new_with_offset(
             term_postings,
@@ -358,6 +369,7 @@ impl<TPostings: Postings> PhraseScorer<TPostings> {
             fieldnorm_reader,
             slop,
             0,
+            json_constraint_key,
         )
     }
 
@@ -367,6 +379,7 @@ impl<TPostings: Postings> PhraseScorer<TPostings> {
         fieldnorm_reader: FieldNormReader,
         slop: u32,
         offset: usize,
+        json_constraint_key: Option<JsonConstraintKey>,
     ) -> PhraseScorer<TPostings> {
         let num_docs = fieldnorm_reader.num_docs();
         let max_offset = term_postings_with_offset
@@ -394,6 +407,8 @@ impl<TPostings: Postings> PhraseScorer<TPostings> {
             left_slops: Vec::with_capacity(100),
             slops_buffer: Vec::with_capacity(100),
             positions_buffer: Vec::with_capacity(100),
+            json_metadata: json_constraint_key.map(|_| Vec::new()),
+            json_metadata_doc: None,
         };
         if scorer.doc() != TERMINATED && !scorer.phrase_match() {
             scorer.advance();
@@ -508,6 +523,85 @@ impl<TPostings: Postings> PhraseScorer<TPostings> {
     fn has_slop(&self) -> bool {
         self.slop > 0
     }
+
+    fn ensure_json_metadata(&mut self) -> Option<&[Arc<[JsonArrayPathEntry]>]> {
+        let mut json_metadata = self.json_metadata.take()?;
+        let current_doc = self.doc();
+        let mut has_metadata = None;
+        if current_doc == TERMINATED {
+            json_metadata.clear();
+            self.json_metadata_doc = None;
+        } else if self.json_metadata_doc == Some(current_doc) {
+            if !json_metadata.is_empty() {
+                has_metadata = Some(());
+            }
+        } else {
+            let postings = self.intersection_docset.docset_mut_specialized(0);
+            if let Some(paths) = postings.postings_mut().json_array_paths() {
+                json_metadata.clear();
+                json_metadata.extend(paths.iter().cloned());
+                self.json_metadata_doc = Some(current_doc);
+                has_metadata = Some(());
+            } else {
+                json_metadata.clear();
+                self.json_metadata_doc = Some(current_doc);
+            }
+        }
+        if has_metadata.is_some() {
+            self.filter_phrase_json_paths(&mut json_metadata);
+            if json_metadata.is_empty() {
+                has_metadata = None;
+            }
+        }
+        self.json_metadata = Some(json_metadata);
+        has_metadata.and(self.json_metadata.as_deref())
+    }
+
+    /// Keep only the JSON paths that actually participate in a phrase match.
+    /// This is currently restricted to slop == 0, where matches are exact
+    /// position overlaps between the first and last term (after offsets).
+    fn filter_phrase_json_paths(&mut self, paths: &mut Vec<Arc<[JsonArrayPathEntry]>>) {
+        if paths.is_empty() || self.num_terms < 2 || self.slop != 0 {
+            return;
+        }
+
+        // Compute the set of matched positions for the first term.
+        let mut matched_positions = self.left_positions.clone();
+        intersection(&mut matched_positions, &self.right_positions);
+        if matched_positions.is_empty() {
+            paths.clear();
+            return;
+        }
+
+        // Re-read the first term positions to align them with the per-position metadata.
+        self.positions_buffer.clear();
+        self.intersection_docset
+            .docset_mut_specialized(0)
+            .positions(&mut self.positions_buffer);
+
+        // If metadata is not per-position, bail out to avoid false negatives.
+        if self.positions_buffer.len() != paths.len() {
+            return;
+        }
+
+        let mut filtered = Vec::with_capacity(paths.len());
+        let mut matched_iter = matched_positions.iter().peekable();
+        for (pos, path) in self.positions_buffer.iter().zip(paths.iter()) {
+            while let Some(&m) = matched_iter.peek() {
+                if m < pos {
+                    matched_iter.next();
+                } else {
+                    break;
+                }
+            }
+            if let Some(&m) = matched_iter.peek() {
+                if m == pos {
+                    filtered.push(path.clone());
+                }
+            }
+        }
+        *paths = filtered;
+    }
 }
 
 impl<TPostings: Postings> DocSet for PhraseScorer<TPostings> {
@@ -515,6 +609,7 @@ impl<TPostings: Postings> DocSet for PhraseScorer<TPostings> {
         loop {
             let doc = self.intersection_docset.advance();
             if doc == TERMINATED || self.phrase_match() {
+                self.json_metadata_doc = None;
                 return doc;
             }
         }
@@ -524,9 +619,12 @@ impl<TPostings: Postings> DocSet for PhraseScorer<TPostings> {
         debug_assert!(target >= self.doc());
         let doc = self.intersection_docset.seek(target);
         if doc == TERMINATED || self.phrase_match() {
+            self.json_metadata_doc = None;
             return doc;
         }
-        self.advance()
+        let advanced = self.advance();
+        self.json_metadata_doc = None;
+        advanced
     }
 
     fn doc(&self) -> DocId {
@@ -556,6 +654,12 @@ impl<TPostings: Postings> Scorer for PhraseScorer<TPostings> {
         } else {
             1.0f32
         }
+    }
+}
+
+impl JsonPathScorer for PhraseScorer<SegmentPostings> {
+    fn json_array_paths_dyn(&mut self) -> Option<&[Arc<[JsonArrayPathEntry]>]> {
+        self.ensure_json_metadata()
     }
 }
 

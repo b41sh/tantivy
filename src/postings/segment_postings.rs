@@ -1,3 +1,6 @@
+use std::sync::Arc;
+
+use common::json_path_writer::JsonArrayPathEntry;
 use common::HasLen;
 
 use crate::docset::DocSet;
@@ -17,6 +20,8 @@ pub struct SegmentPostings {
     pub(crate) block_cursor: BlockSegmentPostings,
     cur: usize,
     position_reader: Option<PositionReader>,
+    json_metadata: Option<Vec<Arc<[JsonArrayPathEntry]>>>,
+    json_metadata_doc: Option<DocId>,
 }
 
 impl SegmentPostings {
@@ -26,6 +31,8 @@ impl SegmentPostings {
             block_cursor: BlockSegmentPostings::empty(),
             cur: 0,
             position_reader: None,
+            json_metadata: None,
+            json_metadata_doc: None,
         }
     }
 
@@ -146,9 +153,15 @@ impl SegmentPostings {
         segment_block_postings: BlockSegmentPostings,
         position_reader: Option<PositionReader>,
     ) -> SegmentPostings {
+        let has_json_metadata = position_reader
+            .as_ref()
+            .map(|reader| reader.has_json_metadata())
+            .unwrap_or(false);
         SegmentPostings {
             block_cursor: segment_block_postings,
             cur: 0, // cursor within the block
+            json_metadata: has_json_metadata.then(Vec::new),
+            json_metadata_doc: None,
             position_reader,
         }
     }
@@ -166,6 +179,7 @@ impl DocSet for SegmentPostings {
         } else {
             self.cur += 1;
         }
+        self.json_metadata_doc = None;
         self.doc()
     }
 
@@ -180,6 +194,7 @@ impl DocSet for SegmentPostings {
         self.cur = self.block_cursor.seek(target);
         let doc = self.doc();
         debug_assert!(doc >= target);
+        self.json_metadata_doc = None;
         doc
     }
 
@@ -243,6 +258,53 @@ impl Postings for SegmentPostings {
                 cum += *output_mut;
                 *output_mut = cum;
             }
+        }
+    }
+
+    fn json_array_paths(&mut self) -> Option<&[Arc<[JsonArrayPathEntry]>]> {
+        self.json_metadata.as_ref()?;
+        self.ensure_json_metadata();
+        self.json_metadata.as_deref()
+    }
+}
+
+impl SegmentPostings {
+    fn current_doc_ord(&self) -> u32 {
+        self.block_cursor.block_doc_range_start() + self.cur as u32
+    }
+
+    fn ensure_json_metadata(&mut self) {
+        if self.json_metadata.is_none() {
+            return;
+        }
+        let current_doc = self.doc();
+        if current_doc == TERMINATED {
+            return;
+        }
+        if self.json_metadata_doc == Some(current_doc) {
+            return;
+        }
+        let doc_ord = self.current_doc_ord();
+        let Some(json_metadata) = self.json_metadata.as_mut() else {
+            return;
+        };
+        let Some(position_reader) = self.position_reader.as_mut() else {
+            self.json_metadata = None;
+            self.json_metadata_doc = None;
+            return;
+        };
+        if !position_reader.has_json_metadata() {
+            self.json_metadata = None;
+            self.json_metadata_doc = None;
+            return;
+        }
+        // Decode the per-doc JSON paths for the current doc ord; this is used by JSON
+        // queries to enforce that multiple terms hit the same array element.
+        if position_reader.fill_doc_json_metadata_refs(current_doc, doc_ord, json_metadata) {
+            self.json_metadata_doc = Some(current_doc);
+        } else {
+            json_metadata.clear();
+            self.json_metadata_doc = Some(current_doc);
         }
     }
 }

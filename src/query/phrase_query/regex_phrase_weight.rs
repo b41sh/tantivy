@@ -94,6 +94,7 @@ impl RegexPhraseWeight {
             similarity_weight_opt,
             fieldnorm_reader,
             self.slop,
+            None,
         )))
     }
 

@@ -19,6 +19,16 @@ impl ConstScoreQuery {
     pub fn new(query: Box<dyn Query>, score: Score) -> ConstScoreQuery {
         ConstScoreQuery { query, score }
     }
+
+    /// The underlying query.
+    pub fn underlying_query(&self) -> Box<dyn Query> {
+        self.query.box_clone()
+    }
+
+    /// Get the constant score.
+    pub fn get_const_score(&self) -> Score {
+        self.score
+    }
 }
 
 impl Clone for ConstScoreQuery {

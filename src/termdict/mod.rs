@@ -22,6 +22,8 @@
 mod fst_termdict;
 #[cfg(not(feature = "quickwit"))]
 use fst_termdict as termdict;
+#[cfg(not(feature = "quickwit"))]
+pub use fst_termdict::TermInfoStore;
 
 #[cfg(feature = "quickwit")]
 mod sstable_termdict;

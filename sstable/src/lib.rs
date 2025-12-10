@@ -35,6 +35,8 @@
 //! assert_eq!(value, None);
 //! ```
 
+#![feature(let_chains)]
+
 use std::io::{self, Write};
 use std::ops::Range;
 

@@ -20,6 +20,16 @@ impl BoostQuery {
     pub fn new(query: Box<dyn Query>, boost: Score) -> BoostQuery {
         BoostQuery { query, boost }
     }
+
+    /// The underlying query.
+    pub fn underlying_query(&self) -> Box<dyn Query> {
+        self.query.box_clone()
+    }
+
+    /// Get the boost score.
+    pub fn get_boost(&self) -> Score {
+        self.boost
+    }
 }
 
 impl Clone for BoostQuery {

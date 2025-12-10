@@ -302,7 +302,7 @@ impl JsonTermMetadataBuilder {
             self.json_array_paths_indexes.clear();
             return None;
         }
-        if self.json_array_paths_map.len() == 1 && self.json_array_paths_map.contains_key(&[]) {
+        if self.json_array_paths_map.len() == 1 && self.json_array_paths_map.contains_key(&vec![]) {
             self.json_array_paths_map.clear();
             self.json_array_paths_indexes.clear();
             return None;

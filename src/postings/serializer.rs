@@ -9,10 +9,7 @@ use super::TermInfo;
 use crate::directory::{CompositeWrite, WritePtr};
 use crate::fieldnorm::FieldNormReader;
 use crate::index::Segment;
-use crate::positions::{
-    PositionSerializer, JSON_METADATA_FLAG_BITMAP, JSON_METADATA_FLAG_SINGLE_PATH,
-    JSON_METADATA_FLAG_TWO_PATHS, JSON_METADATA_MARKER,
-};
+use crate::positions::{PositionSerializer, JSON_METADATA_MARKER};
 use crate::postings::compression::{BlockEncoder, VIntEncoder, COMPRESSION_BLOCK_SIZE};
 use crate::postings::skip::SkipSerializer;
 use crate::query::Bm25Weight;
@@ -228,7 +225,7 @@ impl<'a> FieldSerializer<'a> {
     ) {
         self.write_doc(doc_id, term_freq, position_deltas);
         if let Some(builder) = self.json_metadata.as_mut() {
-            builder.add_doc(metadata);
+            builder.add_doc(doc_id, metadata);
         } else {
             debug_assert!(metadata.is_empty());
         }
@@ -280,31 +277,34 @@ impl<'a> FieldSerializer<'a> {
 #[derive(Default)]
 struct JsonTermMetadataBuilder {
     json_array_paths_map: FxHashMap<Vec<JsonArrayPathEntry>, u32>,
-    json_array_paths_indexes: Vec<Vec<u32>>,
+    doc_entries: Vec<(DocId, Vec<u32>)>,
 }
 
 impl JsonTermMetadataBuilder {
-    fn add_doc(&mut self, metadata: &[Vec<JsonArrayPathEntry>]) {
+    fn add_doc(&mut self, doc_id: DocId, metadata: &[Vec<JsonArrayPathEntry>]) {
         let mut indexes = Vec::new();
+        let mut seen = FxHashSet::default();
         for json_array_path in metadata {
+            if json_array_path.is_empty() {
+                continue;
+            }
             let next_index = self.json_array_paths_map.len() as u32;
             let index = *self
                 .json_array_paths_map
                 .entry(json_array_path.clone())
                 .or_insert(next_index);
-            indexes.push(index);
+            if seen.insert(index) {
+                indexes.push(index);
+            }
         }
-        self.json_array_paths_indexes.push(indexes);
+        if !indexes.is_empty() {
+            self.doc_entries.push((doc_id, indexes));
+        }
     }
 
     fn take_encoded_metadata(&mut self) -> Option<Vec<u8>> {
-        if self.json_array_paths_map.is_empty() {
-            self.json_array_paths_indexes.clear();
-            return None;
-        }
-        if self.json_array_paths_map.len() == 1 && self.json_array_paths_map.contains_key(&vec![]) {
-            self.json_array_paths_map.clear();
-            self.json_array_paths_indexes.clear();
+        if self.json_array_paths_map.is_empty() || self.doc_entries.is_empty() {
+            self.doc_entries.clear();
             return None;
         }
 
@@ -325,14 +325,20 @@ impl JsonTermMetadataBuilder {
             }
         }
 
-        let doc_count = self.json_array_paths_indexes.len();
+        let doc_count = self.doc_entries.len();
         write_u32_vint(doc_count as u32, &mut bytes).expect("writing to Vec cannot fail");
+        let mut prev_doc = 0u32;
+        for (doc_id, _) in &self.doc_entries {
+            write_u32_vint(doc_id - prev_doc, &mut bytes).expect("writing to Vec cannot fail");
+            prev_doc = *doc_id;
+        }
 
         if path_count == 1 {
+            // no extra encoding needed; all docs use path 0
         } else if path_count == 2 {
             let mut packed: u32 = 0;
             let mut count = 0;
-            for indexes in &self.json_array_paths_indexes {
+            for (_, indexes) in &self.doc_entries {
                 let has_first = indexes.iter().any(|&idx| idx == 0);
                 let has_second = indexes.iter().any(|&idx| idx == 1);
                 let state = match (has_first, has_second) {
@@ -353,34 +359,28 @@ impl JsonTermMetadataBuilder {
                 write_u32_vint(packed, &mut bytes).expect("writing to Vec cannot fail");
             }
         } else if path_count <= 4 {
-            let mut count = 0;
-            let bits_per_doc = 4;
-            let docs_per_byte = 8 / bits_per_doc;
-            let docs_per_byte = docs_per_byte.max(1);
             let mut packed: u8 = 0;
-            let mut bit_pos = 0;
-            for indexes in &self.json_array_paths_indexes {
+            let mut half = 0;
+            for (_, indexes) in &self.doc_entries {
                 let mut mask = 0u8;
                 for &idx in indexes {
                     if idx < 4 {
                         mask |= 1u8 << idx;
                     }
                 }
-                packed |= mask << bit_pos;
-                bit_pos += bits_per_doc;
-                count += 1;
-                if count == docs_per_byte {
+                packed |= if half == 0 { mask } else { mask << 4 };
+                half += 1;
+                if half == 2 {
                     write_u32_vint(packed as u32, &mut bytes).expect("writing to Vec cannot fail");
                     packed = 0;
-                    bit_pos = 0;
-                    count = 0;
+                    half = 0;
                 }
             }
-            if count > 0 {
+            if half > 0 {
                 write_u32_vint(packed as u32, &mut bytes).expect("writing to Vec cannot fail");
             }
         } else if path_count <= 32 {
-            for indexes in &self.json_array_paths_indexes {
+            for (_, indexes) in &self.doc_entries {
                 let mut bitmap: u32 = 0;
                 for &idx in indexes {
                     if idx < 32 {
@@ -390,16 +390,16 @@ impl JsonTermMetadataBuilder {
                 write_u32_vint(bitmap, &mut bytes).expect("writing to Vec cannot fail");
             }
         } else {
-            for indexes in &self.json_array_paths_indexes {
+            for (_, indexes) in &self.doc_entries {
                 write_u32_vint(indexes.len() as u32, &mut bytes)
                     .expect("writing to Vec cannot fail");
-                for &idx in indexes {
-                    write_u32_vint(idx, &mut bytes).expect("writing to Vec cannot fail");
+                for idx in indexes {
+                    write_u32_vint(*idx, &mut bytes).expect("writing to Vec cannot fail");
                 }
             }
         }
 
-        self.json_array_paths_indexes.clear();
+        self.doc_entries.clear();
         self.json_array_paths_map.clear();
         Some(bytes)
     }

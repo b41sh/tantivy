@@ -20,7 +20,7 @@ pub struct SegmentPostings {
     cur: usize,
     position_reader: Option<PositionReader>,
     json_metadata: Option<Vec<Vec<JsonArrayPathEntry>>>,
-    positions_scratch: Vec<u32>,
+    json_metadata_doc: Option<DocId>,
 }
 
 impl SegmentPostings {
@@ -31,7 +31,7 @@ impl SegmentPostings {
             cur: 0,
             position_reader: None,
             json_metadata: None,
-            positions_scratch: Vec::new(),
+            json_metadata_doc: None,
         }
     }
 
@@ -160,7 +160,7 @@ impl SegmentPostings {
             block_cursor: segment_block_postings,
             cur: 0, // cursor within the block
             json_metadata: has_json_metadata.then(|| Vec::new()),
-            positions_scratch: Vec::new(),
+            json_metadata_doc: None,
             position_reader,
         }
     }
@@ -178,6 +178,7 @@ impl DocSet for SegmentPostings {
         } else {
             self.cur += 1;
         }
+        self.json_metadata_doc = None;
         self.doc()
     }
 
@@ -192,6 +193,7 @@ impl DocSet for SegmentPostings {
         self.cur = self.block_cursor.seek(target);
         let doc = self.doc();
         debug_assert!(doc >= target);
+        self.json_metadata_doc = None;
         doc
     }
 
@@ -255,14 +257,6 @@ impl Postings for SegmentPostings {
                 cum += *output_mut;
                 *output_mut = cum;
             }
-            if let Some(json_metadata) = self.json_metadata.as_mut() {
-                if let Some(latest_metadata) = position_reader.last_json_metadata() {
-                    json_metadata.clear();
-                    json_metadata.extend(latest_metadata.iter().cloned());
-                } else {
-                    self.json_metadata = None;
-                }
-            }
         }
     }
 
@@ -270,18 +264,44 @@ impl Postings for SegmentPostings {
         if self.json_metadata.is_none() {
             return None;
         }
-        let term_freq = self.term_freq() as usize;
-        if term_freq == 0 {
-            if let Some(json_metadata) = self.json_metadata.as_mut() {
-                json_metadata.clear();
-            }
-            return self.json_metadata.as_ref().map(|metadata| metadata.as_slice());
-        }
-        let mut scratch = std::mem::take(&mut self.positions_scratch);
-        scratch.clear();
-        self.append_positions_with_offset(0, &mut scratch);
-        self.positions_scratch = scratch;
+        self.ensure_json_metadata();
         self.json_metadata.as_ref().map(|metadata| metadata.as_slice())
+    }
+}
+
+impl SegmentPostings {
+    fn ensure_json_metadata(&mut self) {
+        if self.json_metadata.is_none() {
+            return;
+        }
+        let current_doc = self.doc();
+        if current_doc == TERMINATED {
+            return;
+        }
+        if self.json_metadata_doc == Some(current_doc) {
+            return;
+        }
+        let Some(json_metadata) = self.json_metadata.as_mut() else {
+            return;
+        };
+        let Some(position_reader) = self.position_reader.as_ref() else {
+            self.json_metadata = None;
+            self.json_metadata_doc = None;
+            return;
+        };
+        if !position_reader.has_json_metadata() {
+            self.json_metadata = None;
+            self.json_metadata_doc = None;
+            return;
+        }
+        if let Some(paths) = position_reader.doc_json_metadata(current_doc) {
+            json_metadata.clear();
+            json_metadata.extend(paths.into_iter());
+            self.json_metadata_doc = Some(current_doc);
+        } else {
+            json_metadata.clear();
+            self.json_metadata_doc = Some(current_doc);
+        }
     }
 }
 

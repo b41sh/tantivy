@@ -38,9 +38,6 @@ pub use self::serializer::PositionSerializer;
 
 const COMPRESSION_BLOCK_SIZE: usize = BitPacker4x::BLOCK_LEN;
 pub(crate) const JSON_METADATA_MARKER: u8 = 0xFF;
-pub(crate) const JSON_METADATA_FLAG_SINGLE_PATH: u8 = 0x1;
-pub(crate) const JSON_METADATA_FLAG_TWO_PATHS: u8 = 0x2;
-pub(crate) const JSON_METADATA_FLAG_BITMAP: u8 = 0x4;
 
 #[cfg(test)]
 pub(crate) mod tests {
@@ -247,7 +244,6 @@ pub(crate) mod tests {
         serializer.write_positions_delta(&[1u32, 2u32]);
         serializer.close_term()?;
         let mut metadata = Vec::new();
-        metadata.push(0x0); // fallback encoding
         write_u32_vint(2, &mut metadata).unwrap(); // path count
         // path 0
         write_u32_vint(2, &mut metadata).unwrap();
@@ -262,11 +258,11 @@ pub(crate) mod tests {
         write_u32_vint(21, &mut metadata).unwrap();
         write_u32_vint(3, &mut metadata).unwrap();
         // doc count
-        write_u32_vint(1, &mut metadata).unwrap();
-        // doc 0 entries (two indexes referencing path 0 and 1)
-        write_u32_vint(2, &mut metadata).unwrap();
+        write_u32_vint(1, &mut metadata).unwrap(); // doc count
+        // doc id delta
         write_u32_vint(0, &mut metadata).unwrap();
-        write_u32_vint(1, &mut metadata).unwrap();
+        // single doc: state 3 (both paths)
+        write_u32_vint(3, &mut metadata).unwrap();
         serializer.append_json_metadata(&metadata)?;
         serializer.close()?;
         let positions_data = OwnedBytes::new(positions_buffer);
@@ -274,8 +270,7 @@ pub(crate) mod tests {
         let mut buf = [0u32; 2];
         reader.read(0, &mut buf);
         assert_eq!(buf, [1, 2]);
-        let metadata = reader.last_json_metadata().unwrap();
-        println!("metadata={:?}", metadata);
+        let metadata = reader.doc_json_metadata(0).unwrap();
         assert_eq!(metadata.len(), 2);
         assert_eq!(
             metadata[0],

@@ -3,13 +3,12 @@ use std::io;
 
 use common::json_path_writer::JsonArrayPathEntry;
 use common::{read_u32_vint, BinarySerializable, VInt};
+use rustc_hash::FxHashMap;
 
 use crate::directory::OwnedBytes;
-use crate::positions::{
-    COMPRESSION_BLOCK_SIZE, JSON_METADATA_FLAG_BITMAP, JSON_METADATA_FLAG_SINGLE_PATH,
-    JSON_METADATA_FLAG_TWO_PATHS, JSON_METADATA_MARKER,
-};
+use crate::positions::{COMPRESSION_BLOCK_SIZE, JSON_METADATA_MARKER};
 use crate::postings::compression::{BlockDecoder, VIntDecoder};
+use crate::DocId;
 
 /// When accessing the positions of a term, we get a positions_idx from the `Terminfo`.
 /// This means we need to skip to the `nth` position efficiently.
@@ -26,9 +25,7 @@ pub struct PositionReader {
     bit_widths: OwnedBytes,
     positions: OwnedBytes,
     json_paths: Vec<Vec<JsonArrayPathEntry>>,
-    json_doc_mappings: Vec<Vec<u32>>,
-    json_doc_cursor: usize,
-    last_metadata: Vec<Vec<JsonArrayPathEntry>>,
+    json_doc_mappings: FxHashMap<DocId, Vec<u32>>,
 
     block_decoder: BlockDecoder,
 
@@ -53,7 +50,7 @@ impl PositionReader {
         let num_positions_bitpacked_blocks = VInt::deserialize(&mut positions_data)?.0 as usize;
         let (bit_widths, positions) = positions_data.split(num_positions_bitpacked_blocks);
         let mut json_paths = Vec::new();
-        let mut json_doc_mappings = Vec::new();
+        let mut json_doc_mappings = FxHashMap::default();
         let mut positions = positions;
         if positions.len() > 5 {
             let slice = positions.as_slice();
@@ -85,10 +82,18 @@ impl PositionReader {
                             json_paths.push(path);
                         }
                         let doc_count = read_u32_vint(&mut cursor) as usize;
-                        json_doc_mappings.reserve(doc_count);
+                        let mut doc_ids = Vec::with_capacity(doc_count);
+                        let mut prev_doc = 0u32;
+                        for _ in 0..doc_count {
+                            let delta = read_u32_vint(&mut cursor);
+                            let doc_id = prev_doc.wrapping_add(delta);
+                            doc_ids.push(doc_id);
+                            prev_doc = doc_id;
+                        }
+                        let mut doc_indexes: Vec<Vec<u32>> = Vec::with_capacity(doc_count);
                         if path_count == 1 {
                             for _ in 0..doc_count {
-                                json_doc_mappings.push(vec![0u32]);
+                                doc_indexes.push(vec![0u32]);
                             }
                         } else if path_count == 2 {
                             let mut processed = 0;
@@ -106,23 +111,19 @@ impl PositionReader {
                                     if state & 0b10 != 0 {
                                         indexes.push(1u32);
                                     }
-                                    json_doc_mappings.push(indexes);
+                                    doc_indexes.push(indexes);
                                     processed += 1;
                                 }
                             }
                         } else if path_count <= 4 {
-                            let bits_per_doc = 4;
-                            let docs_per_byte = 8 / bits_per_doc;
-                            let docs_per_byte = docs_per_byte.max(1);
                             let mut processed = 0;
                             while processed < doc_count {
                                 let chunk = read_u32_vint(&mut cursor) as u8;
-                                for i in 0..docs_per_byte {
+                                for i in 0..2 {
                                     if processed == doc_count {
                                         break;
                                     }
-                                    let mask =
-                                        (chunk >> (i * bits_per_doc)) & ((1 << bits_per_doc) - 1);
+                                    let mask = (chunk >> (i * 4)) & 0xF;
                                     let mut indexes = Vec::new();
                                     if mask & 0x1 != 0 {
                                         indexes.push(0u32);
@@ -136,7 +137,7 @@ impl PositionReader {
                                     if mask & 0x8 != 0 {
                                         indexes.push(3u32);
                                     }
-                                    json_doc_mappings.push(indexes);
+                                    doc_indexes.push(indexes);
                                     processed += 1;
                                 }
                             }
@@ -149,7 +150,7 @@ impl PositionReader {
                                         indexes.push(idx as u32);
                                     }
                                 }
-                                json_doc_mappings.push(indexes);
+                                doc_indexes.push(indexes);
                             }
                         } else {
                             for _ in 0..doc_count {
@@ -160,8 +161,11 @@ impl PositionReader {
                                 for _ in 0..num_paths {
                                     indexes.push(read_u32_vint(&mut cursor));
                                 }
-                                json_doc_mappings.push(indexes);
+                                doc_indexes.push(indexes);
                             }
+                        }
+                        for (doc_id, indexes) in doc_ids.into_iter().zip(doc_indexes.into_iter()) {
+                            json_doc_mappings.insert(doc_id, indexes);
                         }
                     }
                     positions = positions.slice(0..marker_idx - meta_len);
@@ -173,8 +177,6 @@ impl PositionReader {
             positions: positions.clone(),
             json_paths,
             json_doc_mappings,
-            json_doc_cursor: 0,
-            last_metadata: Vec::new(),
             block_decoder: BlockDecoder::default(),
             block_offset: i64::MAX as u64,
             anchor_offset: 0u64,
@@ -188,8 +190,6 @@ impl PositionReader {
         self.bit_widths = self.original_bit_widths.clone();
         self.block_offset = i64::MAX as u64;
         self.anchor_offset = 0u64;
-        self.json_doc_cursor = 0;
-        self.last_metadata.clear();
     }
 
     /// Advance from num_blocks bitpacked blocks.
@@ -236,8 +236,6 @@ impl PositionReader {
     ///
     /// This function is optimized to be called with increasing values of `offset`.
     pub fn read(&mut self, mut offset: u64, mut output: &mut [u32]) {
-        let requested_offset = offset;
-        let requested_len = output.len();
         if offset < self.anchor_offset {
             self.reset();
         }
@@ -278,47 +276,28 @@ impl PositionReader {
             offset += remaining_in_block as u64;
             self.load_block(i);
         }
-        self.fill_last_metadata(requested_offset, requested_len);
     }
 
     pub fn has_json_metadata(&self) -> bool {
         !self.json_paths.is_empty() && !self.json_doc_mappings.is_empty()
     }
 
-    fn fill_last_metadata(&mut self, _offset: u64, _num_positions: usize) {
-        if self.json_paths.is_empty() {
-            self.last_metadata.clear();
-            return;
-        }
-        if self.json_doc_cursor >= self.json_doc_mappings.len() {
-            self.disable_metadata();
-            return;
-        }
-        self.last_metadata.clear();
-        let doc_paths = &self.json_doc_mappings[self.json_doc_cursor];
-        for &path_idx in doc_paths {
+    pub fn doc_json_metadata(
+        &self,
+        doc_id: DocId,
+    ) -> Option<Vec<Vec<JsonArrayPathEntry>>> {
+        let indexes = self.json_doc_mappings.get(&doc_id)?;
+        let mut paths = Vec::with_capacity(indexes.len());
+        for &path_idx in indexes {
             if let Some(path) = self.json_paths.get(path_idx as usize) {
-                self.last_metadata.push(path.clone());
-            } else {
-                self.disable_metadata();
-                return;
+                paths.push(path.clone());
             }
         }
-        self.json_doc_cursor += 1;
+        Some(paths)
     }
 
     fn disable_metadata(&mut self) {
         self.json_paths.clear();
         self.json_doc_mappings.clear();
-        self.last_metadata.clear();
-        self.json_doc_cursor = 0;
-    }
-
-    pub fn last_json_metadata(&self) -> Option<&[Vec<JsonArrayPathEntry>]> {
-        if self.last_metadata.is_empty() {
-            None
-        } else {
-            Some(&self.last_metadata)
-        }
     }
 }

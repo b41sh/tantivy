@@ -5,7 +5,7 @@ use super::term_weight::TermWeight;
 use crate::query::bm25::Bm25Weight;
 use crate::query::range_query::is_type_valid_for_fastfield_range_query;
 use crate::query::{EnableScoring, Explanation, Query, RangeQuery, Weight};
-use crate::schema::IndexRecordOption;
+use crate::schema::{IndexRecordOption, Type};
 use crate::Term;
 
 /// A Term query matches all of the documents
@@ -107,7 +107,9 @@ impl TermQuery {
             }
         };
         let scoring_enabled = enable_scoring.is_scoring_enabled();
-        let index_record_option = if scoring_enabled {
+        let index_record_option = if self.term.typ() == Type::Json {
+            IndexRecordOption::WithFreqsAndPositions
+        } else if scoring_enabled {
             self.index_record_option
         } else {
             IndexRecordOption::Basic

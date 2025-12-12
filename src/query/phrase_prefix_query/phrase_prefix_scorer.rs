@@ -127,6 +127,7 @@ impl<TPostings: Postings> PhrasePrefixScorer<TPostings> {
                 fieldnorm_reader,
                 0,
                 1,
+                None,
             ))
         } else {
             let (pos, postings) = term_postings

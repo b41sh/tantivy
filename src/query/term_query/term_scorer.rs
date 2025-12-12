@@ -4,7 +4,7 @@ use crate::docset::DocSet;
 use crate::fieldnorm::FieldNormReader;
 use crate::postings::{FreqReadingOption, Postings, SegmentPostings};
 use crate::query::bm25::Bm25Weight;
-use crate::query::{Explanation, Scorer};
+use crate::query::{Explanation, JsonPathScorer, Scorer};
 use crate::schema::{Field, Type};
 use crate::{DocId, Score, Term};
 
@@ -139,6 +139,12 @@ impl Scorer for TermScorer {
     }
 }
 
+impl JsonPathScorer for TermScorer {
+    fn json_array_paths_dyn(&mut self) -> Option<&[Vec<JsonArrayPathEntry>]> {
+        self.json_array_paths()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct JsonConstraintKey {
     field: Field,
@@ -146,7 +152,7 @@ pub struct JsonConstraintKey {
 }
 
 impl JsonConstraintKey {
-    fn from_term(term: &Term) -> Option<Self> {
+    pub fn from_term(term: &Term) -> Option<Self> {
         if term.typ() != Type::Json {
             return None;
         }

@@ -5,15 +5,16 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::docset::{DocSet, COLLECT_BLOCK_BUFFER_LEN, TERMINATED};
 use crate::index::SegmentReader;
-use crate::postings::FreqReadingOption;
+use crate::postings::{FreqReadingOption, SegmentPostings};
 use crate::query::disjunction::Disjunction;
 use crate::query::explanation::does_not_match;
-use crate::query::intersection::Intersection;
 use crate::query::score_combiner::{DoNothingCombiner, ScoreCombiner};
+use crate::query::JsonPathScorer;
+use crate::query::phrase_query::PhraseScorer;
 use crate::query::term_query::{JsonConstraintKey, TermScorer};
 use crate::query::weight::{for_each_docset_buffered, for_each_pruning_scorer, for_each_scorer};
 use crate::query::{
-    intersect_scorers, BufferedUnionScorer, EmptyScorer, Exclude, Explanation, Occur,
+    intersect_scorers, BufferedUnionScorer, EmptyScorer, Exclude, Explanation, Intersection, Occur,
     RequiredOptionalScorer, Scorer, Weight,
 };
 use crate::{DocId, Score};
@@ -27,24 +28,22 @@ fn enforce_json_constraints(
     scorers: Vec<Box<dyn Scorer>>,
     num_docs: u32,
 ) -> Vec<Box<dyn Scorer>> {
-    let mut grouped: FxHashMap<JsonConstraintKey, Vec<TermScorer>> = FxHashMap::default();
+    let mut grouped: FxHashMap<JsonConstraintKey, Vec<Box<dyn JsonPathScorer>>> =
+        FxHashMap::default();
     let mut others = Vec::with_capacity(scorers.len());
     for scorer in scorers.into_iter() {
-        if scorer.is::<TermScorer>() {
-            let term_scorer = *(scorer.downcast::<TermScorer>().map_err(|_| ()).unwrap());
-            if let Some(key) = term_scorer.json_constraint_key() {
-                grouped.entry(key).or_default().push(term_scorer);
-                continue;
+        match try_into_json_path_scorer(scorer) {
+            Ok((key, json_scorer)) => {
+                grouped.entry(key).or_default().push(json_scorer);
             }
-            others.push(Box::new(term_scorer) as Box<dyn Scorer>);
-        } else {
-            others.push(scorer);
+            Err(original) => others.push(original),
         }
     }
     for (key, mut group) in grouped {
         if group.len() <= 1 {
             if let Some(single) = group.pop() {
-                others.push(Box::new(single) as Box<dyn Scorer>);
+                let scorer: Box<dyn Scorer> = single;
+                others.push(scorer);
             }
         } else {
             others.push(build_json_constraint_scorer(group, num_docs));
@@ -54,10 +53,37 @@ fn enforce_json_constraints(
 }
 
 fn build_json_constraint_scorer(
-    term_scorers: Vec<TermScorer>,
+    json_scorers: Vec<Box<dyn JsonPathScorer>>,
     num_docs: u32,
 ) -> Box<dyn Scorer> {
-    Box::new(JsonConstraintScorer::new(term_scorers, num_docs))
+    Box::new(JsonConstraintScorer::new(json_scorers, num_docs))
+}
+
+fn try_into_json_path_scorer(
+    scorer: Box<dyn Scorer>,
+) -> Result<(JsonConstraintKey, Box<dyn JsonPathScorer>), Box<dyn Scorer>> {
+    if scorer.is::<TermScorer>() {
+        let term_scorer = *(scorer.downcast::<TermScorer>().map_err(|_| ()).unwrap());
+        if let Some(key) = term_scorer.json_constraint_key() {
+            let json_scorer: Box<dyn JsonPathScorer> = Box::new(term_scorer);
+            return Ok((key, json_scorer));
+        } else {
+            let original: Box<dyn Scorer> = Box::new(term_scorer);
+            return Err(original);
+        }
+    }
+    if scorer.is::<PhraseScorer<SegmentPostings>>() {
+        let phrase_scorer =
+            *(scorer.downcast::<PhraseScorer<SegmentPostings>>().map_err(|_| ()).unwrap());
+        if let Some(key) = phrase_scorer.json_constraint_key() {
+            let json_scorer: Box<dyn JsonPathScorer> = Box::new(phrase_scorer);
+            return Ok((key, json_scorer));
+        } else {
+            let original: Box<dyn Scorer> = Box::new(phrase_scorer);
+            return Err(original);
+        }
+    }
+    Err(scorer)
 }
 
 fn scorer_disjunction<TScoreCombiner>(
@@ -430,14 +456,14 @@ fn is_positive_occur(occur: Occur) -> bool {
 }
 
 struct JsonConstraintScorer {
-    intersection: Intersection<TermScorer, TermScorer>,
+    intersection: Intersection<Box<dyn JsonPathScorer>, Box<dyn JsonPathScorer>>,
     num_terms: usize,
 }
 
 impl JsonConstraintScorer {
-    fn new(term_scorers: Vec<TermScorer>, num_docs: u32) -> Self {
-        let num_terms = term_scorers.len();
-        let mut intersection = Intersection::new(term_scorers, num_docs);
+    fn new(json_scorers: Vec<Box<dyn JsonPathScorer>>, num_docs: u32) -> Self {
+        let num_terms = json_scorers.len();
+        let mut intersection = Intersection::new(json_scorers, num_docs);
         let mut scorer = JsonConstraintScorer {
             intersection,
             num_terms,
@@ -452,7 +478,7 @@ impl JsonConstraintScorer {
         let mut common: Option<FxHashSet<Vec<JsonArrayPathEntry>>> = None;
         for ord in 0..self.num_terms {
             let scorer = self.intersection.docset_mut_specialized(ord);
-            let metadata_opt = scorer.json_array_paths();
+            let metadata_opt = scorer.json_array_paths_dyn();
             if metadata_opt.is_none() {
                 return true;
             }
@@ -518,7 +544,7 @@ impl Scorer for JsonConstraintScorer {
 mod tests {
     use super::*;
     use crate::collector::TopDocs;
-    use crate::query::{BooleanQuery, Occur, Query, TermQuery};
+    use crate::query::{BooleanQuery, Occur, PhraseQuery, Query, TermQuery};
     use crate::schema::{IndexRecordOption, Schema, TEXT};
     use crate::{doc, Index, Term};
     use crate::serde_json::json;
@@ -532,42 +558,64 @@ mod tests {
         {
             let mut writer = index.writer_for_tests()?;
             writer.add_document(doc!(
-                doc_body_field => json!({"videoInfo":{"extraData":[{"name":"codec4","type":"mp4"}]}})
+                doc_body_field => json!({"videoInfo":{"extraData":[{"name":"codec foo","type":"mp4"}]}})
             ))?;
             writer.add_document(doc!(
-                doc_body_field => json!({"videoInfo":{"extraData":[{"name":"codec4","type":"jpg"},{"name":"codecB","type":"mp4"}]}})
-            ))?;
-            writer.add_document(doc!(
-                doc_body_field => json!({"videoInfo":{"extraData":{"name":"codec4","type":"jpg"}}})
+                doc_body_field => json!({"videoInfo":{"extraData":[{"name":"codec foo","type":"jpg"},{"name":"codec bar","type":"mp4"}]}})
             ))?;
             writer.commit()?;
         }
         let reader = index.reader()?;
         let searcher = reader.searcher();
 
-        let mut name_term =
+        let mut foo_term =
             Term::from_field_json_path(doc_body_field, "videoInfo.extraData.name", false);
-        name_term.append_type_and_str("codec4");
-        let name_query: Box<dyn Query> =
-            Box::new(TermQuery::new(name_term, IndexRecordOption::WithFreqsAndPositions));
-
-
-        let top_docs = searcher.search(&name_query, &TopDocs::with_limit(10))?;
-
-
+        foo_term.append_type_and_str("foo");
         let mut type_term =
             Term::from_field_json_path(doc_body_field, "videoInfo.extraData.type", false);
         type_term.append_type_and_str("mp4");
-        let type_query: Box<dyn Query> =
-            Box::new(TermQuery::new(type_term, IndexRecordOption::WithFreqsAndPositions));
 
-        let boolean_query =
-            BooleanQuery::from(vec![(Occur::Must, name_query), (Occur::Must, type_query)]);
+        let boolean_query = BooleanQuery::from(vec![
+            (
+                Occur::Must,
+                Box::new(TermQuery::new(
+                    foo_term.clone(),
+                    IndexRecordOption::WithFreqsAndPositions,
+                )),
+            ),
+            (
+                Occur::Must,
+                Box::new(TermQuery::new(
+                    type_term.clone(),
+                    IndexRecordOption::WithFreqsAndPositions,
+                )),
+            ),
+        ]);
         let top_docs = searcher.search(&boolean_query, &TopDocs::with_limit(10))?;
         assert_eq!(top_docs.len(), 1);
         assert_eq!(top_docs[0].1.doc_id, 0u32);
 
-        assert_eq!(1, 2);
+        let mut codec_term =
+            Term::from_field_json_path(doc_body_field, "videoInfo.extraData.name", false);
+        codec_term.append_type_and_str("codec");
+        let mut foo_phrase_term =
+            Term::from_field_json_path(doc_body_field, "videoInfo.extraData.name", false);
+        foo_phrase_term.append_type_and_str("foo");
+        let phrase_query: Box<dyn Query> =
+            Box::new(PhraseQuery::new(vec![codec_term, foo_phrase_term]));
+        let boolean_phrase_query = BooleanQuery::from(vec![
+            (Occur::Must, phrase_query),
+            (
+                Occur::Must,
+                Box::new(TermQuery::new(
+                    type_term,
+                    IndexRecordOption::WithFreqsAndPositions,
+                )),
+            ),
+        ]);
+        let top_docs = searcher.search(&boolean_phrase_query, &TopDocs::with_limit(10))?;
+        assert_eq!(top_docs.len(), 1);
+        assert_eq!(top_docs[0].1.doc_id, 0u32);
 
         Ok(())
     }

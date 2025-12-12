@@ -3,8 +3,6 @@ use std::io;
 
 use common::json_path_writer::JsonArrayPathEntry;
 use common::{read_u32_vint, BinarySerializable, VInt};
-use rustc_hash::FxHashMap;
-
 use crate::directory::OwnedBytes;
 use crate::positions::{COMPRESSION_BLOCK_SIZE, JSON_METADATA_MARKER};
 use crate::postings::compression::{BlockDecoder, VIntDecoder};
@@ -25,7 +23,9 @@ pub struct PositionReader {
     bit_widths: OwnedBytes,
     positions: OwnedBytes,
     json_paths: Vec<Vec<JsonArrayPathEntry>>,
-    json_doc_mappings: FxHashMap<DocId, Vec<u32>>,
+    json_doc_ids: Vec<DocId>,
+    json_doc_indexes: Vec<Vec<u32>>,
+    json_doc_cursor: usize,
 
     block_decoder: BlockDecoder,
 
@@ -50,7 +50,8 @@ impl PositionReader {
         let num_positions_bitpacked_blocks = VInt::deserialize(&mut positions_data)?.0 as usize;
         let (bit_widths, positions) = positions_data.split(num_positions_bitpacked_blocks);
         let mut json_paths = Vec::new();
-        let mut json_doc_mappings = FxHashMap::default();
+        let mut json_doc_ids = Vec::new();
+        let mut json_doc_indexes = Vec::new();
         let mut positions = positions;
         if positions.len() > 5 {
             let slice = positions.as_slice();
@@ -164,9 +165,8 @@ impl PositionReader {
                                 doc_indexes.push(indexes);
                             }
                         }
-                        for (doc_id, indexes) in doc_ids.into_iter().zip(doc_indexes.into_iter()) {
-                            json_doc_mappings.insert(doc_id, indexes);
-                        }
+                        json_doc_ids = doc_ids;
+                        json_doc_indexes = doc_indexes;
                     }
                     positions = positions.slice(0..marker_idx - meta_len);
                 }
@@ -176,7 +176,9 @@ impl PositionReader {
             bit_widths: bit_widths.clone(),
             positions: positions.clone(),
             json_paths,
-            json_doc_mappings,
+            json_doc_ids,
+            json_doc_indexes,
+            json_doc_cursor: 0,
             block_decoder: BlockDecoder::default(),
             block_offset: i64::MAX as u64,
             anchor_offset: 0u64,
@@ -190,6 +192,7 @@ impl PositionReader {
         self.bit_widths = self.original_bit_widths.clone();
         self.block_offset = i64::MAX as u64;
         self.anchor_offset = 0u64;
+        self.json_doc_cursor = 0;
     }
 
     /// Advance from num_blocks bitpacked blocks.
@@ -279,25 +282,44 @@ impl PositionReader {
     }
 
     pub fn has_json_metadata(&self) -> bool {
-        !self.json_paths.is_empty() && !self.json_doc_mappings.is_empty()
+        !self.json_paths.is_empty() && !self.json_doc_ids.is_empty()
     }
 
-    pub fn doc_json_metadata(
-        &self,
+    pub fn fill_doc_json_metadata(
+        &mut self,
         doc_id: DocId,
-    ) -> Option<Vec<Vec<JsonArrayPathEntry>>> {
-        let indexes = self.json_doc_mappings.get(&doc_id)?;
-        let mut paths = Vec::with_capacity(indexes.len());
+        output: &mut Vec<Vec<JsonArrayPathEntry>>,
+    ) -> bool {
+        if self.json_doc_ids.is_empty() {
+            output.clear();
+            return false;
+        }
+        while self.json_doc_cursor < self.json_doc_ids.len()
+            && self.json_doc_ids[self.json_doc_cursor] < doc_id
+        {
+            self.json_doc_cursor += 1;
+        }
+        if self.json_doc_cursor >= self.json_doc_ids.len()
+            || self.json_doc_ids[self.json_doc_cursor] != doc_id
+        {
+            output.clear();
+            return false;
+        }
+        let indexes = &self.json_doc_indexes[self.json_doc_cursor];
+        output.clear();
+        output.reserve(indexes.len());
         for &path_idx in indexes {
             if let Some(path) = self.json_paths.get(path_idx as usize) {
-                paths.push(path.clone());
+                output.push(path.clone());
             }
         }
-        Some(paths)
+        true
     }
 
     fn disable_metadata(&mut self) {
         self.json_paths.clear();
-        self.json_doc_mappings.clear();
+        self.json_doc_ids.clear();
+        self.json_doc_indexes.clear();
+        self.json_doc_cursor = 0;
     }
 }

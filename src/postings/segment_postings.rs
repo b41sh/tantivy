@@ -284,7 +284,7 @@ impl SegmentPostings {
         let Some(json_metadata) = self.json_metadata.as_mut() else {
             return;
         };
-        let Some(position_reader) = self.position_reader.as_ref() else {
+        let Some(position_reader) = self.position_reader.as_mut() else {
             self.json_metadata = None;
             self.json_metadata_doc = None;
             return;
@@ -294,13 +294,11 @@ impl SegmentPostings {
             self.json_metadata_doc = None;
             return;
         }
-        if let Some(paths) = position_reader.doc_json_metadata(current_doc) {
+        let has_metadata =
+            position_reader.fill_doc_json_metadata(current_doc, json_metadata);
+        self.json_metadata_doc = Some(current_doc);
+        if !has_metadata {
             json_metadata.clear();
-            json_metadata.extend(paths.into_iter());
-            self.json_metadata_doc = Some(current_doc);
-        } else {
-            json_metadata.clear();
-            self.json_metadata_doc = Some(current_doc);
         }
     }
 }

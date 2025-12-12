@@ -270,12 +270,13 @@ pub(crate) mod tests {
         let mut buf = [0u32; 2];
         reader.read(0, &mut buf);
         assert_eq!(buf, [1, 2]);
-        let mut metadata_buf = Vec::new();
-        assert!(reader.fill_doc_json_metadata(0, &mut metadata_buf));
-        assert_eq!(metadata_buf.len(), 2);
+        let mut metadata_indexes = Vec::new();
+        assert!(reader.fill_doc_json_metadata_indexes(0, &mut metadata_indexes));
+        assert_eq!(metadata_indexes, vec![0u32, 1u32]);
+        let first_path = reader.json_path_entries(0).unwrap();
         assert_eq!(
-            metadata_buf[0],
-            vec![
+            first_path,
+            &[
                 JsonArrayPathEntry {
                     path_id: 10,
                     element_ord: 0
@@ -284,11 +285,12 @@ pub(crate) mod tests {
                     path_id: 11,
                     element_ord: 1
                 }
-            ]
+            ][..]
         );
+        let second_path = reader.json_path_entries(1).unwrap();
         assert_eq!(
-            metadata_buf[1],
-            vec![
+            second_path,
+            &[
                 JsonArrayPathEntry {
                     path_id: 20,
                     element_ord: 2
@@ -297,7 +299,7 @@ pub(crate) mod tests {
                     path_id: 21,
                     element_ord: 3
                 }
-            ]
+            ][..]
         );
         Ok(())
     }

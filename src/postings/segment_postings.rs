@@ -20,6 +20,7 @@ pub struct SegmentPostings {
     cur: usize,
     position_reader: Option<PositionReader>,
     json_metadata: Option<Vec<Vec<JsonArrayPathEntry>>>,
+    json_metadata_indexes: Option<Vec<u32>>,
     json_metadata_doc: Option<DocId>,
 }
 
@@ -31,6 +32,7 @@ impl SegmentPostings {
             cur: 0,
             position_reader: None,
             json_metadata: None,
+            json_metadata_indexes: None,
             json_metadata_doc: None,
         }
     }
@@ -160,6 +162,7 @@ impl SegmentPostings {
             block_cursor: segment_block_postings,
             cur: 0, // cursor within the block
             json_metadata: has_json_metadata.then(|| Vec::new()),
+            json_metadata_indexes: has_json_metadata.then(|| Vec::new()),
             json_metadata_doc: None,
             position_reader,
         }
@@ -264,41 +267,88 @@ impl Postings for SegmentPostings {
         if self.json_metadata.is_none() {
             return None;
         }
-        self.ensure_json_metadata();
+        self.ensure_json_metadata_paths();
         self.json_metadata.as_ref().map(|metadata| metadata.as_slice())
+    }
+
+    fn json_array_path_indexes(&mut self) -> Option<&[u32]> {
+        if self.json_metadata_indexes.is_none() {
+            return None;
+        }
+        if !self.ensure_json_metadata_indexes() {
+            if self.json_metadata_indexes.is_none() {
+                return None;
+            }
+        }
+        self.json_metadata_indexes
+            .as_ref()
+            .map(|indexes| indexes.as_slice())
     }
 }
 
 impl SegmentPostings {
-    fn ensure_json_metadata(&mut self) {
+    fn ensure_json_metadata_indexes(&mut self) -> bool {
+        let Some(indexes) = self.json_metadata_indexes.as_mut() else {
+            return false;
+        };
+        let current_doc = self.doc();
+        if current_doc == TERMINATED {
+            indexes.clear();
+            return false;
+        }
+        if self.json_metadata_doc == Some(current_doc) {
+            return true;
+        }
+        let Some(position_reader) = self.position_reader.as_mut() else {
+            self.json_metadata_indexes = None;
+            self.json_metadata = None;
+            self.json_metadata_doc = None;
+            return false;
+        };
+        if !position_reader.has_json_metadata() {
+            self.json_metadata_indexes = None;
+            self.json_metadata = None;
+            self.json_metadata_doc = None;
+            return false;
+        }
+        let has_metadata =
+            position_reader.fill_doc_json_metadata_indexes(current_doc, indexes);
+        self.json_metadata_doc = Some(current_doc);
+        if !has_metadata {
+            indexes.clear();
+        }
+        if let Some(paths) = self.json_metadata.as_mut() {
+            paths.clear();
+        }
+        true
+    }
+
+    fn ensure_json_metadata_paths(&mut self) {
         if self.json_metadata.is_none() {
             return;
         }
-        let current_doc = self.doc();
-        if current_doc == TERMINATED {
-            return;
-        }
-        if self.json_metadata_doc == Some(current_doc) {
+        if !self.ensure_json_metadata_indexes() {
+            if let Some(paths) = self.json_metadata.as_mut() {
+                paths.clear();
+            }
             return;
         }
         let Some(json_metadata) = self.json_metadata.as_mut() else {
             return;
         };
-        let Some(position_reader) = self.position_reader.as_mut() else {
-            self.json_metadata = None;
-            self.json_metadata_doc = None;
+        let Some(indexes) = self.json_metadata_indexes.as_ref() else {
+            json_metadata.clear();
             return;
         };
-        if !position_reader.has_json_metadata() {
-            self.json_metadata = None;
-            self.json_metadata_doc = None;
-            return;
-        }
-        let has_metadata =
-            position_reader.fill_doc_json_metadata(current_doc, json_metadata);
-        self.json_metadata_doc = Some(current_doc);
-        if !has_metadata {
+        let Some(position_reader) = self.position_reader.as_ref() else {
             json_metadata.clear();
+            return;
+        };
+        json_metadata.clear();
+        for &idx in indexes {
+            if let Some(path) = position_reader.json_path_entries(idx) {
+                json_metadata.push(path.to_vec());
+            }
         }
     }
 }

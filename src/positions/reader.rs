@@ -285,10 +285,10 @@ impl PositionReader {
         !self.json_paths.is_empty() && !self.json_doc_ids.is_empty()
     }
 
-    pub fn fill_doc_json_metadata(
+    pub fn fill_doc_json_metadata_indexes(
         &mut self,
         doc_id: DocId,
-        output: &mut Vec<Vec<JsonArrayPathEntry>>,
+        output: &mut Vec<u32>,
     ) -> bool {
         if self.json_doc_ids.is_empty() {
             output.clear();
@@ -305,15 +305,18 @@ impl PositionReader {
             output.clear();
             return false;
         }
-        let indexes = &self.json_doc_indexes[self.json_doc_cursor];
         output.clear();
-        output.reserve(indexes.len());
-        for &path_idx in indexes {
-            if let Some(path) = self.json_paths.get(path_idx as usize) {
-                output.push(path.clone());
-            }
-        }
+        output.extend_from_slice(&self.json_doc_indexes[self.json_doc_cursor]);
         true
+    }
+
+    pub fn json_path_entries(
+        &self,
+        path_idx: u32,
+    ) -> Option<&[JsonArrayPathEntry]> {
+        self.json_paths
+            .get(path_idx as usize)
+            .map(|path| path.as_slice())
     }
 
     fn disable_metadata(&mut self) {

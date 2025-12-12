@@ -38,6 +38,11 @@ pub trait Postings: DocSet + 'static {
     fn json_array_paths(&mut self) -> Option<&[Vec<JsonArrayPathEntry>]> {
         None
     }
+
+    /// Returns the JSON array path dictionary indexes for the current document if available.
+    fn json_array_path_indexes(&mut self) -> Option<&[u32]> {
+        None
+    }
 }
 
 impl Postings for Box<dyn Postings> {
@@ -51,5 +56,9 @@ impl Postings for Box<dyn Postings> {
 
     fn json_array_paths(&mut self) -> Option<&[Vec<JsonArrayPathEntry>]> {
         (**self).json_array_paths()
+    }
+
+    fn json_array_path_indexes(&mut self) -> Option<&[u32]> {
+        (**self).json_array_path_indexes()
     }
 }

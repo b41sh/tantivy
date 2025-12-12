@@ -614,6 +614,11 @@ impl JsonPathScorer for PhraseScorer<SegmentPostings> {
     fn json_array_paths_dyn(&mut self) -> Option<&[Vec<JsonArrayPathEntry>]> {
         self.ensure_json_metadata()
     }
+
+    fn json_array_path_indexes_dyn(&mut self) -> Option<&[u32]> {
+        let postings = self.intersection_docset.docset_mut_specialized(0);
+        postings.postings_mut().json_array_path_indexes()
+    }
 }
 
 #[cfg(test)]

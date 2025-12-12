@@ -90,6 +90,10 @@ impl TermScorer {
         self.postings.json_array_paths()
     }
 
+    pub fn json_array_path_indexes(&mut self) -> Option<&[u32]> {
+        self.postings.json_array_path_indexes()
+    }
+
     pub fn json_constraint_key(&self) -> Option<JsonConstraintKey> {
         JsonConstraintKey::from_term(&self.term)
     }
@@ -142,6 +146,10 @@ impl Scorer for TermScorer {
 impl JsonPathScorer for TermScorer {
     fn json_array_paths_dyn(&mut self) -> Option<&[Vec<JsonArrayPathEntry>]> {
         self.json_array_paths()
+    }
+
+    fn json_array_path_indexes_dyn(&mut self) -> Option<&[u32]> {
+        self.json_array_path_indexes()
     }
 }
 

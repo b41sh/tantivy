@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
-use common::json_path_writer::JsonArrayPathEntry;
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 
 use crate::docset::{DocSet, COLLECT_BLOCK_BUFFER_LEN, TERMINATED};
 use crate::index::SegmentReader;
@@ -458,6 +457,7 @@ fn is_positive_occur(occur: Occur) -> bool {
 struct JsonConstraintScorer {
     intersection: Intersection<Box<dyn JsonPathScorer>, Box<dyn JsonPathScorer>>,
     num_terms: usize,
+    common_indexes: Vec<u32>,
 }
 
 impl JsonConstraintScorer {
@@ -467,6 +467,7 @@ impl JsonConstraintScorer {
         let mut scorer = JsonConstraintScorer {
             intersection,
             num_terms,
+            common_indexes: Vec::new(),
         };
         if scorer.doc() != TERMINATED && !scorer.satisfies_constraint() {
             scorer.advance();
@@ -475,32 +476,44 @@ impl JsonConstraintScorer {
     }
 
     fn satisfies_constraint(&mut self) -> bool {
-        let mut common: Option<FxHashSet<Vec<JsonArrayPathEntry>>> = None;
-        for ord in 0..self.num_terms {
-            let scorer = self.intersection.docset_mut_specialized(ord);
-            let metadata_opt = scorer.json_array_paths_dyn();
-            if metadata_opt.is_none() {
+        let num_terms = self.num_terms;
+        let intersection = &mut self.intersection;
+        let common_indexes = &mut self.common_indexes;
+        common_indexes.clear();
+        let mut initialized = false;
+        for ord in 0..num_terms {
+            let scorer = intersection.docset_mut_specialized(ord);
+            let Some(indexes) = scorer.json_array_path_indexes_dyn() else {
+                return true;
+            };
+            if indexes.is_empty() {
                 return true;
             }
-            let metadata = metadata_opt.unwrap();
-            if metadata.is_empty() {
-                return true;
+            if !initialized {
+                populate_common_indexes(common_indexes, indexes);
+                initialized = true;
+                continue;
             }
-            let stacks: FxHashSet<Vec<JsonArrayPathEntry>> =
-                metadata.iter().cloned().collect();
-            common = Some(match common {
-                None => stacks,
-                Some(prev) => prev
-                    .into_iter()
-                    .filter(|stack| stacks.contains(stack))
-                    .collect(),
-            });
-            if common.as_ref().map_or(false, |set| set.is_empty()) {
+            retain_common_indexes(common_indexes, indexes);
+            if common_indexes.is_empty() {
                 return false;
             }
         }
-        common.map_or(true, |set| !set.is_empty())
+        initialized && !common_indexes.is_empty()
     }
+}
+
+fn populate_common_indexes(common: &mut Vec<u32>, indexes: &[u32]) {
+    common.clear();
+    for &idx in indexes {
+        if !common.iter().any(|existing| *existing == idx) {
+            common.push(idx);
+        }
+    }
+}
+
+fn retain_common_indexes(common: &mut Vec<u32>, indexes: &[u32]) {
+    common.retain(|idx| indexes.iter().any(|candidate| candidate == idx));
 }
 
 impl DocSet for JsonConstraintScorer {

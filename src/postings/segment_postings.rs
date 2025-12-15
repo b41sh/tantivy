@@ -288,10 +288,16 @@ impl Postings for SegmentPostings {
 
 impl SegmentPostings {
     fn ensure_json_metadata_indexes(&mut self) -> bool {
+        let current_doc = self.doc();
+        let Some(position_reader) = self.position_reader.as_mut() else {
+            self.json_metadata_indexes = None;
+            self.json_metadata = None;
+            self.json_metadata_doc = None;
+            return false;
+        };
         let Some(indexes) = self.json_metadata_indexes.as_mut() else {
             return false;
         };
-        let current_doc = self.doc();
         if current_doc == TERMINATED {
             indexes.clear();
             return false;
@@ -299,12 +305,6 @@ impl SegmentPostings {
         if self.json_metadata_doc == Some(current_doc) {
             return true;
         }
-        let Some(position_reader) = self.position_reader.as_mut() else {
-            self.json_metadata_indexes = None;
-            self.json_metadata = None;
-            self.json_metadata_doc = None;
-            return false;
-        };
         if !position_reader.has_json_metadata() {
             self.json_metadata_indexes = None;
             self.json_metadata = None;
@@ -327,24 +327,19 @@ impl SegmentPostings {
         if self.json_metadata.is_none() {
             return;
         }
-        if !self.ensure_json_metadata_indexes() {
-            if let Some(paths) = self.json_metadata.as_mut() {
-                paths.clear();
+        let Some(position_reader) = self.position_reader.as_ref() else {
+            if let Some(json_metadata) = self.json_metadata.as_mut() {
+                json_metadata.clear();
             }
             return;
-        }
+        };
         let Some(json_metadata) = self.json_metadata.as_mut() else {
             return;
         };
-        let Some(indexes) = self.json_metadata_indexes.as_ref() else {
-            json_metadata.clear();
-            return;
-        };
-        let Some(position_reader) = self.position_reader.as_ref() else {
-            json_metadata.clear();
-            return;
-        };
         json_metadata.clear();
+        let Some(indexes) = self.json_metadata_indexes.as_ref() else {
+            return;
+        };
         for &idx in indexes {
             if let Some(path) = position_reader.json_path_entries(idx) {
                 json_metadata.push(path.to_vec());

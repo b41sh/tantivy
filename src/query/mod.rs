@@ -14,6 +14,7 @@ mod explanation;
 mod fuzzy_query;
 mod intersection;
 mod json_utils;
+mod json_query;
 mod more_like_this;
 mod phrase_prefix_query;
 mod phrase_query;
@@ -35,6 +36,7 @@ mod vec_docset;
 pub(crate) mod score_combiner;
 pub use query_grammar::Occur;
 pub(crate) use self::json_utils::JsonPathScorer;
+pub use self::json_query::JsonQuery;
 
 pub use self::all_query::{AllQuery, AllScorer, AllWeight};
 pub use self::automaton_weight::AutomatonWeight;

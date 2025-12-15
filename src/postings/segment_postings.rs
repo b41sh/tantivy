@@ -288,19 +288,25 @@ impl Postings for SegmentPostings {
 
 impl SegmentPostings {
     fn ensure_json_metadata_indexes(&mut self) -> bool {
-        let Some(indexes) = self.json_metadata_indexes.as_mut() else {
+        let Some(_) = self.json_metadata_indexes.as_ref() else {
             return false;
         };
         let current_doc = self.doc();
         if current_doc == TERMINATED {
-            indexes.clear();
+            if let Some(indexes) = self.json_metadata_indexes.as_mut() {
+                indexes.clear();
+            }
             return false;
         }
         if self.json_metadata_doc == Some(current_doc) {
             return true;
         }
+        let mut indexes = match self.json_metadata_indexes.take() {
+            Some(indexes) => indexes,
+            None => return false,
+        };
         let Some(position_reader) = self.position_reader.as_mut() else {
-            self.json_metadata_indexes = None;
+            self.json_metadata_indexes = Some(indexes);
             self.json_metadata = None;
             self.json_metadata_doc = None;
             return false;
@@ -312,7 +318,7 @@ impl SegmentPostings {
             return false;
         }
         let has_metadata =
-            position_reader.fill_doc_json_metadata_indexes(current_doc, indexes);
+            position_reader.fill_doc_json_metadata_indexes(current_doc, &mut indexes);
         self.json_metadata_doc = Some(current_doc);
         if !has_metadata {
             indexes.clear();
@@ -320,6 +326,7 @@ impl SegmentPostings {
         if let Some(paths) = self.json_metadata.as_mut() {
             paths.clear();
         }
+        self.json_metadata_indexes = Some(indexes);
         true
     }
 

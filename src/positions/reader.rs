@@ -79,6 +79,7 @@ impl PositionReader {
         self.bit_widths = self.original_bit_widths.clone();
         self.block_offset = i64::MAX as u64;
         self.anchor_offset = 0u64;
+        self.json_metadata.reset();
     }
 
     /// Advance from num_blocks bitpacked blocks.
@@ -316,6 +317,14 @@ enum JsonMetadata {
     None,
     Indexed(JsonIndexedMetadata),
 }
+
+impl JsonMetadata {
+    fn reset(&mut self) {
+        if let JsonMetadata::Indexed(indexed) = self {
+            indexed.reset();
+        }
+    }
+}
 struct JsonIndexedMetadata {
     doc_ids: Vec<DocId>,
     counts: Vec<u32>,
@@ -323,6 +332,7 @@ struct JsonIndexedMetadata {
     indexes: JsonIndexBlocks,
     scratch: Vec<u32>,
     global_paths: Arc<Vec<Arc<[JsonArrayPathEntry]>>>,
+    doc_cursor: usize,
 }
 
 impl JsonIndexedMetadata {
@@ -331,36 +341,43 @@ impl JsonIndexedMetadata {
         doc_id: DocId,
         output: &mut Vec<Arc<[JsonArrayPathEntry]>>,
     ) -> bool {
-        match self.doc_ids.binary_search(&doc_id) {
-            Ok(pos) => {
-                let count = self.counts[pos] as usize;
-                if count == 0 {
-                    output.clear();
-                    return false;
-                }
-                let start = if pos == 0 {
-                    0
-                } else {
-                    self.prefix_sums[pos - 1] as usize
-                };
-                self.indexes
-                    .read_range(start, count, &mut self.scratch);
-                output.clear();
-                for idx in &self.scratch {
-                    if *idx == 0 {
-                        continue;
-                    }
-                    if let Some(path) = self.global_paths.get(*idx as usize) {
-                        output.push(path.clone());
-                    }
-                }
-                !output.is_empty()
+        while self.doc_cursor < self.doc_ids.len()
+            && self.doc_ids[self.doc_cursor] < doc_id
+        {
+            self.doc_cursor += 1;
+        }
+        if self.doc_cursor >= self.doc_ids.len()
+            || self.doc_ids[self.doc_cursor] != doc_id
+        {
+            output.clear();
+            return false;
+        }
+        let pos = self.doc_cursor;
+        let count = self.counts[pos] as usize;
+        if count == 0 {
+            output.clear();
+            return false;
+        }
+        let start = if pos == 0 {
+            0
+        } else {
+            self.prefix_sums[pos - 1] as usize
+        };
+        self.indexes.read_range(start, count, &mut self.scratch);
+        output.clear();
+        for idx in &self.scratch {
+            if *idx == 0 {
+                continue;
             }
-            Err(_) => {
-                output.clear();
-                false
+            if let Some(path) = self.global_paths.get(*idx as usize) {
+                output.push(path.clone());
             }
         }
+        !output.is_empty()
+    }
+
+    fn reset(&mut self) {
+        self.doc_cursor = 0;
     }
 }
 

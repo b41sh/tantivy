@@ -223,10 +223,8 @@ impl<'a> FieldSerializer<'a> {
         metadata: &[Vec<JsonArrayPathEntry>],
     ) {
         self.write_doc(doc_id, term_freq, position_deltas);
-        if let (Some(builder), Some(path_table)) =
-            (self.json_metadata.as_mut(), self.json_path_table.as_mut())
-        {
-            builder.add_doc(doc_id, metadata, path_table);
+        if let (Some(builder), Some(path_table)) = (self.json_metadata.as_mut(), self.json_path_table.as_mut()) {
+            builder.add_doc(metadata, path_table);
         } else {
             debug_assert!(metadata.is_empty());
         }
@@ -315,17 +313,13 @@ impl JsonPathTableBuilder {
 
 #[derive(Default)]
 struct JsonTermMetadataBuilder {
-    doc_entries: Vec<(DocId, Vec<u32>)>,
+    doc_entries: Vec<Vec<u32>>,
+    has_non_empty_entry: bool,
     block_encoder: BlockEncoder,
 }
 
 impl JsonTermMetadataBuilder {
-    fn add_doc(
-        &mut self,
-        doc_id: DocId,
-        metadata: &[Vec<JsonArrayPathEntry>],
-        path_table: &mut JsonPathTableBuilder,
-    ) {
+    fn add_doc(&mut self, metadata: &[Vec<JsonArrayPathEntry>], path_table: &mut JsonPathTableBuilder) {
         let mut indexes = Vec::new();
         let mut seen = FxHashSet::default();
         for json_array_path in metadata {
@@ -338,44 +332,43 @@ impl JsonTermMetadataBuilder {
             }
         }
         if !indexes.is_empty() {
-            self.doc_entries.push((doc_id, indexes));
+            self.has_non_empty_entry = true;
         }
+        self.doc_entries.push(indexes);
     }
 
     fn take_encoded_metadata(&mut self) -> Option<Vec<u8>> {
-        if self.doc_entries.is_empty() {
+        if self.doc_entries.is_empty() || !self.has_non_empty_entry {
+            self.doc_entries.clear();
+            self.has_non_empty_entry = false;
             return None;
         }
-        self.doc_entries.sort_by_key(|(doc_id, _)| *doc_id);
         let mut bytes = Vec::new();
-        // version marker to differentiate from legacy encoding.
-        write_u32_vint(0, &mut bytes).expect("writing to Vec cannot fail");
+        // version marker to differentiate encoding.
+        write_u32_vint(1, &mut bytes).expect("writing to Vec cannot fail");
 
         let num_docs = self.doc_entries.len();
         write_u32_vint(num_docs as u32, &mut bytes).expect("writing to Vec cannot fail");
-        let mut prev_doc = 0u32;
-        for (doc_id, _) in &self.doc_entries {
-            write_u32_vint(doc_id - prev_doc, &mut bytes).expect("writing to Vec cannot fail");
-            prev_doc = *doc_id;
-        }
 
-        let counts: Vec<u32> = self
-            .doc_entries
-            .iter()
-            .map(|(_, indexes)| indexes.len() as u32)
-            .collect();
+        let counts: Vec<u32> = self.doc_entries.iter().map(|indexes| indexes.len() as u32).collect();
+        if counts.iter().all(|count| *count == 0) {
+            self.doc_entries.clear();
+            self.has_non_empty_entry = false;
+            return None;
+        }
         Self::encode_bitpacked(&counts, &mut bytes, &mut self.block_encoder);
 
         let total_indexes: u32 = counts.iter().copied().sum();
         write_u32_vint(total_indexes, &mut bytes).expect("writing to Vec cannot fail");
 
         let mut flat_indexes = Vec::with_capacity(total_indexes as usize);
-        for (_, indexes) in &self.doc_entries {
+        for indexes in &self.doc_entries {
             flat_indexes.extend(indexes.iter().copied());
         }
         Self::encode_bitpacked(&flat_indexes, &mut bytes, &mut self.block_encoder);
 
         self.doc_entries.clear();
+        self.has_non_empty_entry = false;
         Some(bytes)
     }
 

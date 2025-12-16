@@ -175,6 +175,7 @@ impl PositionReader {
     pub fn fill_doc_json_metadata_refs(
         &mut self,
         doc_id: DocId,
+        doc_ord: u32,
         output: &mut Vec<Arc<[JsonArrayPathEntry]>>,
     ) -> bool {
         match &mut self.json_metadata {
@@ -182,7 +183,7 @@ impl PositionReader {
                 output.clear();
                 false
             }
-            JsonMetadata::Indexed(indexed) => indexed.fill(doc_id, output),
+            JsonMetadata::Indexed(indexed) => indexed.fill(doc_id, doc_ord, output),
         }
     }
 
@@ -215,19 +216,20 @@ fn parse_json_metadata(
     let mut cursor = metadata_bytes.as_slice();
     let mut consumed = 0usize;
     let header = read_vint_and_update(&mut cursor, &mut consumed);
-    if header != 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Unsupported JSON metadata version",
-        ));
-    }
     let Some(global_paths) = global_paths else {
         return Ok(JsonMetadata::None);
     };
-    parse_indexed_metadata(metadata_bytes, cursor, consumed, global_paths)
+    match header {
+        0 => parse_indexed_metadata_v0(metadata_bytes, cursor, consumed, global_paths),
+        1 => parse_indexed_metadata_v1(metadata_bytes, cursor, consumed, global_paths),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Unsupported JSON metadata version",
+        )),
+    }
 }
 
-fn parse_indexed_metadata(
+fn parse_indexed_metadata_v0(
     metadata_bytes: OwnedBytes,
     mut cursor: &[u8],
     mut consumed: usize,
@@ -258,9 +260,47 @@ fn parse_indexed_metadata(
     }
     debug_assert_eq!(sum as usize, total_indexes);
     Ok(JsonMetadata::Indexed(JsonIndexedMetadata {
-        doc_ids,
-        counts,
-        prefix_sums,
+        storage: JsonMetadataStorage::DocIds {
+            doc_ids,
+            counts,
+            prefix_sums,
+            doc_cursor: 0,
+        },
+        indexes,
+        scratch: Vec::new(),
+        global_paths,
+    }))
+}
+
+fn parse_indexed_metadata_v1(
+    metadata_bytes: OwnedBytes,
+    mut cursor: &[u8],
+    mut consumed: usize,
+    global_paths: Arc<Vec<Arc<[JsonArrayPathEntry]>>>,
+) -> io::Result<JsonMetadata> {
+    let num_docs = read_vint_and_update(&mut cursor, &mut consumed) as usize;
+    if num_docs == 0 {
+        return Ok(JsonMetadata::None);
+    }
+    let counts = decode_bitpacked_values(&metadata_bytes, &mut cursor, &mut consumed, num_docs)?;
+    if counts.iter().all(|count| *count == 0) {
+        return Ok(JsonMetadata::None);
+    }
+    let total_indexes = read_vint_and_update(&mut cursor, &mut consumed) as usize;
+    if total_indexes == 0 {
+        return Ok(JsonMetadata::None);
+    }
+    let indexes =
+        JsonIndexBlocks::parse(metadata_bytes, &mut cursor, &mut consumed, total_indexes)?;
+    let mut prefix_sums = Vec::with_capacity(counts.len());
+    let mut sum = 0u32;
+    for count in &counts {
+        sum += *count;
+        prefix_sums.push(sum);
+    }
+    debug_assert_eq!(sum as usize, total_indexes);
+    Ok(JsonMetadata::Indexed(JsonIndexedMetadata {
+        storage: JsonMetadataStorage::DocOrds { counts, prefix_sums },
         indexes,
         scratch: Vec::new(),
         global_paths,
@@ -325,59 +365,100 @@ impl JsonMetadata {
         }
     }
 }
+enum JsonMetadataStorage {
+    DocIds {
+        doc_ids: Vec<DocId>,
+        counts: Vec<u32>,
+        prefix_sums: Vec<u32>,
+        doc_cursor: usize,
+    },
+    DocOrds {
+        counts: Vec<u32>,
+        prefix_sums: Vec<u32>,
+    },
+}
+
 struct JsonIndexedMetadata {
-    doc_ids: Vec<DocId>,
-    counts: Vec<u32>,
-    prefix_sums: Vec<u32>,
+    storage: JsonMetadataStorage,
     indexes: JsonIndexBlocks,
     scratch: Vec<u32>,
     global_paths: Arc<Vec<Arc<[JsonArrayPathEntry]>>>,
-    doc_cursor: usize,
 }
 
 impl JsonIndexedMetadata {
-    fn fill(
-        &mut self,
-        doc_id: DocId,
-        output: &mut Vec<Arc<[JsonArrayPathEntry]>>,
-    ) -> bool {
-        while self.doc_cursor < self.doc_ids.len()
-            && self.doc_ids[self.doc_cursor] < doc_id
-        {
-            self.doc_cursor += 1;
-        }
-        if self.doc_cursor >= self.doc_ids.len()
-            || self.doc_ids[self.doc_cursor] != doc_id
-        {
-            output.clear();
-            return false;
-        }
-        let pos = self.doc_cursor;
-        let count = self.counts[pos] as usize;
-        if count == 0 {
-            output.clear();
-            return false;
-        }
-        let start = if pos == 0 {
-            0
-        } else {
-            self.prefix_sums[pos - 1] as usize
-        };
-        self.indexes.read_range(start, count, &mut self.scratch);
-        output.clear();
-        for idx in &self.scratch {
-            if *idx == 0 {
-                continue;
+    fn fill(&mut self, doc_id: DocId, doc_ord: u32, output: &mut Vec<Arc<[JsonArrayPathEntry]>>) -> bool {
+        match &mut self.storage {
+            JsonMetadataStorage::DocIds {
+                doc_ids,
+                counts,
+                prefix_sums,
+                doc_cursor,
+            } => {
+                while *doc_cursor < doc_ids.len() && doc_ids[*doc_cursor] < doc_id {
+                    *doc_cursor += 1;
+                }
+                if *doc_cursor >= doc_ids.len() || doc_ids[*doc_cursor] != doc_id {
+                    output.clear();
+                    return false;
+                }
+                let pos = *doc_cursor;
+                let count = counts[pos] as usize;
+                if count == 0 {
+                    output.clear();
+                    return false;
+                }
+                let start = if pos == 0 {
+                    0
+                } else {
+                    prefix_sums[pos - 1] as usize
+                };
+                self.indexes.read_range(start, count, &mut self.scratch);
+                output.clear();
+                for idx in &self.scratch {
+                    if *idx == 0 {
+                        continue;
+                    }
+                    if let Some(path) = self.global_paths.get(*idx as usize) {
+                        output.push(path.clone());
+                    }
+                }
+                !output.is_empty()
             }
-            if let Some(path) = self.global_paths.get(*idx as usize) {
-                output.push(path.clone());
+            JsonMetadataStorage::DocOrds { counts, prefix_sums } => {
+                let doc_ord = doc_ord as usize;
+                if doc_ord >= counts.len() {
+                    output.clear();
+                    return false;
+                }
+                let count = counts[doc_ord] as usize;
+                if count == 0 {
+                    output.clear();
+                    return false;
+                }
+                let start = if doc_ord == 0 {
+                    0
+                } else {
+                    prefix_sums[doc_ord - 1] as usize
+                };
+                self.indexes.read_range(start, count, &mut self.scratch);
+                output.clear();
+                for idx in &self.scratch {
+                    if *idx == 0 {
+                        continue;
+                    }
+                    if let Some(path) = self.global_paths.get(*idx as usize) {
+                        output.push(path.clone());
+                    }
+                }
+                !output.is_empty()
             }
         }
-        !output.is_empty()
     }
 
     fn reset(&mut self) {
-        self.doc_cursor = 0;
+        if let JsonMetadataStorage::DocIds { doc_cursor, .. } = &mut self.storage {
+            *doc_cursor = 0;
+        }
     }
 }
 

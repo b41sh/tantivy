@@ -292,7 +292,7 @@ pub(crate) mod tests {
         reader.read(0, &mut buf);
         assert_eq!(buf, [1, 2]);
         let mut metadata_paths = Vec::new();
-        assert!(reader.fill_doc_json_metadata_refs(0, &mut metadata_paths));
+        assert!(reader.fill_doc_json_metadata_refs(0, 0, &mut metadata_paths));
         assert_eq!(metadata_paths.len(), 2);
         let first_path = metadata_paths[0].as_ref();
         assert_eq!(
@@ -322,6 +322,55 @@ pub(crate) mod tests {
                 }
             ][..]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_position_reader_json_metadata_v1() -> crate::Result<()> {
+        let mut positions_buffer = vec![];
+        let mut serializer = PositionSerializer::new(&mut positions_buffer);
+        serializer.write_positions_delta(&[1u32, 2u32]);
+        serializer.close_term()?;
+        let mut metadata = Vec::new();
+        write_u32_vint(1, &mut metadata).unwrap(); // version marker
+        write_u32_vint(3, &mut metadata).unwrap(); // doc count
+        // counts
+        write_u32_vint(0, &mut metadata).unwrap(); // num blocks
+        // remainder counts
+        write_u32_vint(1, &mut metadata).unwrap();
+        write_u32_vint(1, &mut metadata).unwrap();
+        write_u32_vint(0, &mut metadata).unwrap();
+        write_u32_vint(2, &mut metadata).unwrap(); // total indexes
+        write_u32_vint(0, &mut metadata).unwrap(); // num index blocks
+        write_u32_vint(1, &mut metadata).unwrap();
+        write_u32_vint(1, &mut metadata).unwrap();
+        serializer.append_json_metadata(&metadata)?;
+        serializer.close()?;
+        let positions_data = OwnedBytes::new(positions_buffer);
+        let global_paths = vec![
+            Vec::new(),
+            vec![JsonArrayPathEntry {
+                path_id: 30,
+                element_ord: 0
+            }],
+        ];
+        let global_paths_arc: Vec<Arc<[JsonArrayPathEntry]>> = global_paths
+            .into_iter()
+            .map(|path| Arc::from(path.into_boxed_slice()))
+            .collect();
+        let mut reader =
+            PositionReader::open(positions_data, Some(Arc::new(global_paths_arc)))?;
+        let mut metadata_paths = Vec::new();
+        assert!(reader.fill_doc_json_metadata_refs(10, 0, &mut metadata_paths));
+        assert_eq!(metadata_paths.len(), 1);
+        assert_eq!(metadata_paths[0][0].path_id, 30);
+        metadata_paths.clear();
+        assert!(reader.fill_doc_json_metadata_refs(20, 1, &mut metadata_paths));
+        assert_eq!(metadata_paths.len(), 1);
+        assert_eq!(metadata_paths[0][0].element_ord, 0);
+        metadata_paths.clear();
+        assert!(!reader.fill_doc_json_metadata_refs(30, 2, &mut metadata_paths));
+        assert!(metadata_paths.is_empty());
         Ok(())
     }
 }

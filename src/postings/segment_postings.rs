@@ -275,6 +275,10 @@ impl Postings for SegmentPostings {
 }
 
 impl SegmentPostings {
+    fn current_doc_ord(&self) -> u32 {
+        self.block_cursor.block_doc_range_start() + self.cur as u32
+    }
+
     fn ensure_json_metadata(&mut self) {
         if self.json_metadata.is_none() {
             return;
@@ -299,7 +303,8 @@ impl SegmentPostings {
             self.json_metadata_doc = None;
             return;
         }
-        if position_reader.fill_doc_json_metadata_refs(current_doc, json_metadata) {
+        let doc_ord = self.current_doc_ord();
+        if position_reader.fill_doc_json_metadata_refs(current_doc, doc_ord, json_metadata) {
             self.json_metadata_doc = Some(current_doc);
         } else {
             json_metadata.clear();

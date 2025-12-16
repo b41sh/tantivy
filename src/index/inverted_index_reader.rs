@@ -2,6 +2,7 @@ use std::convert::TryInto;
 use std::io;
 use std::sync::Arc;
 
+use common::HasLen;
 use common::json_path_writer::{JsonArrayPathEntry, JSON_END_OF_PATH};
 use common::{read_u32_vint, BinarySerializable, ByteCount};
 #[cfg(feature = "quickwit")]

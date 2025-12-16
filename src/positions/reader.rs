@@ -24,6 +24,7 @@ use crate::DocId;
 /// so skipping a block without decompressing it is just a matter of advancing that many
 /// bytes.
 
+#[derive(Clone)]
 pub struct PositionReader {
     bit_widths: OwnedBytes,
     positions: OwnedBytes,
@@ -217,12 +218,12 @@ fn parse_json_metadata(
     let header = read_vint_and_update(&mut cursor, &mut consumed);
     if header == 0 {
         if let Some(global_paths) = global_paths {
-            parse_indexed_metadata(metadata_bytes, cursor, consumed, global_paths)
+            parse_indexed_metadata(metadata_bytes.clone(), cursor, consumed, global_paths)
         } else {
             Ok(JsonMetadata::None)
         }
     } else {
-        parse_legacy_metadata(metadata_bytes, cursor, consumed, header as usize)
+        parse_legacy_metadata(metadata_bytes.clone(), cursor, consumed, header as usize)
     }
 }
 
@@ -272,120 +273,7 @@ fn parse_legacy_metadata(
     mut consumed: usize,
     path_count: usize,
 ) -> io::Result<JsonMetadata> {
-    if path_count == 0 {
-        return Ok(JsonMetadata::None);
-    }
-    let mut paths = Vec::with_capacity(path_count);
-    for _ in 0..path_count {
-        let depth = read_vint_and_update(&mut cursor, &mut consumed) as usize;
-        let mut path = Vec::with_capacity(depth);
-        for _ in 0..depth {
-            let path_id = read_vint_and_update(&mut cursor, &mut consumed);
-            let element_ord = read_vint_and_update(&mut cursor, &mut consumed);
-            path.push(JsonArrayPathEntry { path_id, element_ord });
-        }
-        paths.push(Arc::from(path.into_boxed_slice()));
-    }
-    let doc_count = read_vint_and_update(&mut cursor, &mut consumed) as usize;
-    let mut doc_ids = Vec::with_capacity(doc_count);
-    let mut prev_doc = 0u32;
-    for _ in 0..doc_count {
-        let delta = read_vint_and_update(&mut cursor, &mut consumed);
-        let doc_id = prev_doc.wrapping_add(delta);
-        doc_ids.push(doc_id);
-        prev_doc = doc_id;
-    }
-    let mut doc_indexes: Vec<Vec<u32>> = Vec::with_capacity(doc_count);
-    if path_count == 1 {
-        for _ in 0..doc_count {
-            doc_indexes.push(vec![0u32]);
-        }
-    } else if path_count == 2 {
-        let mut processed = 0usize;
-        while processed < doc_count {
-            let word = read_vint_and_update(&mut cursor, &mut consumed);
-            for shift in 0..16 {
-                if processed == doc_count {
-                    break;
-                }
-                let state = (word >> (shift * 2)) & 0b11;
-                let mut indexes = Vec::new();
-                if state & 0b01 != 0 {
-                    indexes.push(0u32);
-                }
-                if state & 0b10 != 0 {
-                    indexes.push(1u32);
-                }
-                doc_indexes.push(indexes);
-                processed += 1;
-            }
-        }
-    } else if path_count <= 4 {
-        let mut processed = 0usize;
-        while processed < doc_count {
-            let chunk = read_vint_and_update(&mut cursor, &mut consumed) as u8;
-            for i in 0..2 {
-                if processed == doc_count {
-                    break;
-                }
-                let mask = (chunk >> (i * 4)) & 0xF;
-                let mut indexes = Vec::new();
-                if mask & 0x1 != 0 {
-                    indexes.push(0u32);
-                }
-                if mask & 0x2 != 0 {
-                    indexes.push(1u32);
-                }
-                if mask & 0x4 != 0 {
-                    indexes.push(2u32);
-                }
-                if mask & 0x8 != 0 {
-                    indexes.push(3u32);
-                }
-                doc_indexes.push(indexes);
-                processed += 1;
-            }
-        }
-    } else if path_count <= 32 {
-        for _ in 0..doc_count {
-            let bitmap = read_vint_and_update(&mut cursor, &mut consumed);
-            let mut indexes = Vec::new();
-            for idx in 0..path_count.min(32) {
-                if (bitmap >> idx) & 1 == 1 {
-                    indexes.push(idx as u32);
-                }
-            }
-            doc_indexes.push(indexes);
-        }
-    } else {
-        for _ in 0..doc_count {
-            let num_paths = read_vint_and_update(&mut cursor, &mut consumed) as usize;
-            let mut indexes = Vec::with_capacity(num_paths);
-            for _ in 0..num_paths {
-                indexes.push(read_vint_and_update(&mut cursor, &mut consumed));
-            }
-            doc_indexes.push(indexes);
-        }
-    }
-    let mut doc_paths: FxHashMap<DocId, Vec<Arc<[JsonArrayPathEntry]>>> =
-        FxHashMap::default();
-    for (idx, doc_id) in doc_ids.into_iter().enumerate() {
-        if let Some(indexes) = doc_indexes.get(idx) {
-            if indexes.is_empty() {
-                continue;
-            }
-            let mut entries = Vec::new();
-            for index in indexes {
-                if let Some(path) = paths.get(*index as usize) {
-                    entries.push(path.clone());
-                }
-            }
-            if !entries.is_empty() {
-                doc_paths.insert(doc_id, entries);
-            }
-        }
-    }
-    Ok(JsonMetadata::Legacy(JsonLegacyMetadata { doc_paths }))
+    todo!()
 }
 
 fn decode_bitpacked_values(
@@ -434,12 +322,14 @@ fn decode_bitpacked_values(
     Ok(values)
 }
 
+#[derive(Clone)]
 enum JsonMetadata {
     None,
     Legacy(JsonLegacyMetadata),
     Indexed(JsonIndexedMetadata),
 }
 
+#[derive(Clone)]
 struct JsonLegacyMetadata {
     doc_paths: FxHashMap<DocId, Vec<Arc<[JsonArrayPathEntry]>>>,
 }
@@ -461,6 +351,7 @@ impl JsonLegacyMetadata {
     }
 }
 
+#[derive(Clone)]
 struct JsonIndexedMetadata {
     doc_ids: Vec<DocId>,
     counts: Vec<u32>,
@@ -509,6 +400,7 @@ impl JsonIndexedMetadata {
     }
 }
 
+#[derive(Clone)]
 struct JsonIndexBlocks {
     bit_widths: Vec<u8>,
     block_offsets: Vec<usize>,

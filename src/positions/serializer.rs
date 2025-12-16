@@ -1,4 +1,5 @@
 use std::io::{self, Write};
+use common::json_path_writer::JsonArrayPathEntry;
 
 use common::{write_u32_vint, BinarySerializable, CountingWriter, VInt};
 

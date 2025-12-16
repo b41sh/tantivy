@@ -1,7 +1,7 @@
 use std::fmt;
+use std::sync::Arc;
 
-use rustc_hash::FxHashSet;
-
+use common::json_path_writer::JsonArrayPathEntry;
 use crate::docset::{DocSet, TERMINATED};
 use crate::index::SegmentReader;
 use crate::query::explanation::does_not_match;
@@ -122,7 +122,7 @@ fn convert_scorer_to_json(
 struct JsonConstraintScorer {
     intersection: Intersection<Box<dyn JsonPathScorer>, Box<dyn JsonPathScorer>>,
     num_terms: usize,
-    common_indexes: Vec<u32>,
+    common_indexes: Vec<Arc<[JsonArrayPathEntry]>>,
 }
 
 impl JsonConstraintScorer {
@@ -145,18 +145,18 @@ impl JsonConstraintScorer {
         let mut initialized = false;
         for ord in 0..self.num_terms {
             let scorer = self.intersection.docset_mut_specialized(ord);
-            let indexes_opt = scorer.json_array_path_indexes_dyn();
-            let indexes = match indexes_opt {
+            let paths_opt = scorer.json_array_paths_dyn();
+            let paths = match paths_opt {
                 None => return true,
-                Some(indexes) if indexes.is_empty() => return true,
-                Some(indexes) => indexes,
+                Some(paths) if paths.is_empty() => return true,
+                Some(paths) => paths,
             };
             if !initialized {
-                populate_common_indexes(&mut self.common_indexes, indexes);
+                populate_common_indexes(&mut self.common_indexes, paths);
                 initialized = true;
                 continue;
             }
-            retain_common_indexes(&mut self.common_indexes, indexes);
+            retain_common_indexes(&mut self.common_indexes, paths);
             if self.common_indexes.is_empty() {
                 return false;
             }
@@ -202,19 +202,27 @@ impl Scorer for JsonConstraintScorer {
     }
 }
 
-fn populate_common_indexes(common: &mut Vec<u32>, indexes: &[u32]) {
+fn populate_common_indexes(
+    common: &mut Vec<Arc<[JsonArrayPathEntry]>>,
+    paths: &[Arc<[JsonArrayPathEntry]>],
+) {
     common.clear();
-    let mut seen = FxHashSet::default();
-    for &idx in indexes {
-        if seen.insert(idx) {
-            common.push(idx);
+    for path in paths {
+        if !common.iter().any(|existing| existing.as_ref() == path.as_ref()) {
+            common.push(path.clone());
         }
     }
 }
 
-fn retain_common_indexes(common: &mut Vec<u32>, indexes: &[u32]) {
-    let set: FxHashSet<u32> = indexes.iter().cloned().collect();
-    common.retain(|idx| set.contains(idx));
+fn retain_common_indexes(
+    common: &mut Vec<Arc<[JsonArrayPathEntry]>>,
+    paths: &[Arc<[JsonArrayPathEntry]>],
+) {
+    common.retain(|candidate| {
+        paths
+            .iter()
+            .any(|path| path.as_ref() == candidate.as_ref())
+    });
 }
 
 #[cfg(test)]

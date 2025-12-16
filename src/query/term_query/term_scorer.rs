@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use common::json_path_writer::{JsonArrayPathEntry, JSON_PATH_SEGMENT_SEP};
 
 use crate::docset::DocSet;
@@ -86,12 +88,8 @@ impl TermScorer {
         self.postings.term_freq()
     }
 
-    pub fn json_array_paths(&mut self) -> Option<&[Vec<JsonArrayPathEntry>]> {
+    pub fn json_array_paths(&mut self) -> Option<&[Arc<[JsonArrayPathEntry]>]> {
         self.postings.json_array_paths()
-    }
-
-    pub fn json_array_path_indexes(&mut self) -> Option<&[u32]> {
-        self.postings.json_array_path_indexes()
     }
 
     pub fn json_constraint_key(&self) -> Option<JsonConstraintKey> {
@@ -144,12 +142,8 @@ impl Scorer for TermScorer {
 }
 
 impl JsonPathScorer for TermScorer {
-    fn json_array_paths_dyn(&mut self) -> Option<&[Vec<JsonArrayPathEntry>]> {
+    fn json_array_paths_dyn(&mut self) -> Option<&[Arc<[JsonArrayPathEntry]>]> {
         self.json_array_paths()
-    }
-
-    fn json_array_path_indexes_dyn(&mut self) -> Option<&[u32]> {
-        self.json_array_path_indexes()
     }
 }
 

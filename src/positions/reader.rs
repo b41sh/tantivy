@@ -1,6 +1,8 @@
 use std::convert::TryInto;
 use std::io;
 
+use std::sync::Arc;
+
 use common::json_path_writer::JsonArrayPathEntry;
 use common::{read_u32_vint, BinarySerializable, VInt};
 use crate::directory::OwnedBytes;
@@ -22,7 +24,7 @@ use crate::DocId;
 pub struct PositionReader {
     bit_widths: OwnedBytes,
     positions: OwnedBytes,
-    json_paths: Vec<Vec<JsonArrayPathEntry>>,
+    json_paths: Vec<Arc<[JsonArrayPathEntry]>>,
     json_doc_ids: Vec<DocId>,
     json_doc_indexes: Vec<Vec<u32>>,
     json_doc_cursor: usize,
@@ -80,7 +82,7 @@ impl PositionReader {
                                     element_ord,
                                 });
                             }
-                            json_paths.push(path);
+                            json_paths.push(Arc::from(path.into_boxed_slice()));
                         }
                         let doc_count = read_u32_vint(&mut cursor) as usize;
                         let mut doc_ids = Vec::with_capacity(doc_count);
@@ -285,10 +287,10 @@ impl PositionReader {
         !self.json_paths.is_empty() && !self.json_doc_ids.is_empty()
     }
 
-    pub fn fill_doc_json_metadata_indexes(
+    pub fn fill_doc_json_metadata_refs(
         &mut self,
         doc_id: DocId,
-        output: &mut Vec<u32>,
+        output: &mut Vec<Arc<[JsonArrayPathEntry]>>,
     ) -> bool {
         if self.json_doc_ids.is_empty() {
             output.clear();
@@ -306,17 +308,12 @@ impl PositionReader {
             return false;
         }
         output.clear();
-        output.extend_from_slice(&self.json_doc_indexes[self.json_doc_cursor]);
+        for &idx in &self.json_doc_indexes[self.json_doc_cursor] {
+            if let Some(path) = self.json_paths.get(idx as usize) {
+                output.push(path.clone());
+            }
+        }
         true
-    }
-
-    pub fn json_path_entries(
-        &self,
-        path_idx: u32,
-    ) -> Option<&[JsonArrayPathEntry]> {
-        self.json_paths
-            .get(path_idx as usize)
-            .map(|path| path.as_slice())
     }
 
     fn disable_metadata(&mut self) {

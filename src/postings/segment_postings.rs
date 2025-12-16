@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use common::HasLen;
 
 use common::json_path_writer::JsonArrayPathEntry;
@@ -19,8 +21,7 @@ pub struct SegmentPostings {
     pub(crate) block_cursor: BlockSegmentPostings,
     cur: usize,
     position_reader: Option<PositionReader>,
-    json_metadata: Option<Vec<Vec<JsonArrayPathEntry>>>,
-    json_metadata_indexes: Option<Vec<u32>>,
+    json_metadata: Option<Vec<Arc<[JsonArrayPathEntry]>>>,
     json_metadata_doc: Option<DocId>,
 }
 
@@ -32,7 +33,6 @@ impl SegmentPostings {
             cur: 0,
             position_reader: None,
             json_metadata: None,
-            json_metadata_indexes: None,
             json_metadata_doc: None,
         }
     }
@@ -162,7 +162,6 @@ impl SegmentPostings {
             block_cursor: segment_block_postings,
             cur: 0, // cursor within the block
             json_metadata: has_json_metadata.then(|| Vec::new()),
-            json_metadata_indexes: has_json_metadata.then(|| Vec::new()),
             json_metadata_doc: None,
             position_reader,
         }
@@ -263,99 +262,48 @@ impl Postings for SegmentPostings {
         }
     }
 
-    fn json_array_paths(&mut self) -> Option<&[Vec<JsonArrayPathEntry>]> {
+    fn json_array_paths(&mut self) -> Option<&[Arc<[JsonArrayPathEntry]>]> {
         if self.json_metadata.is_none() {
             return None;
         }
-        self.ensure_json_metadata_paths();
-        self.json_metadata.as_ref().map(|metadata| metadata.as_slice())
+        self.ensure_json_metadata();
+        self.json_metadata
+            .as_ref()
+            .map(|metadata| metadata.as_slice())
     }
 
-    fn json_array_path_indexes(&mut self) -> Option<&[u32]> {
-        if self.json_metadata_indexes.is_none() {
-            return None;
-        }
-        if !self.ensure_json_metadata_indexes() {
-            if self.json_metadata_indexes.is_none() {
-                return None;
-            }
-        }
-        self.json_metadata_indexes
-            .as_ref()
-            .map(|indexes| indexes.as_slice())
-    }
 }
 
 impl SegmentPostings {
-    fn ensure_json_metadata_indexes(&mut self) -> bool {
-        let Some(_) = self.json_metadata_indexes.as_ref() else {
-            return false;
-        };
-        let current_doc = self.doc();
-        if current_doc == TERMINATED {
-            if let Some(indexes) = self.json_metadata_indexes.as_mut() {
-                indexes.clear();
-            }
-            return false;
-        }
-        if self.json_metadata_doc == Some(current_doc) {
-            return true;
-        }
-        let mut indexes = match self.json_metadata_indexes.take() {
-            Some(indexes) => indexes,
-            None => return false,
-        };
-        let Some(position_reader) = self.position_reader.as_mut() else {
-            self.json_metadata_indexes = Some(indexes);
-            self.json_metadata = None;
-            self.json_metadata_doc = None;
-            return false;
-        };
-        if !position_reader.has_json_metadata() {
-            self.json_metadata_indexes = None;
-            self.json_metadata = None;
-            self.json_metadata_doc = None;
-            return false;
-        }
-        let has_metadata =
-            position_reader.fill_doc_json_metadata_indexes(current_doc, &mut indexes);
-        self.json_metadata_doc = Some(current_doc);
-        if !has_metadata {
-            indexes.clear();
-        }
-        if let Some(paths) = self.json_metadata.as_mut() {
-            paths.clear();
-        }
-        self.json_metadata_indexes = Some(indexes);
-        true
-    }
-
-    fn ensure_json_metadata_paths(&mut self) {
+    fn ensure_json_metadata(&mut self) {
         if self.json_metadata.is_none() {
             return;
         }
-        if !self.ensure_json_metadata_indexes() {
-            if let Some(paths) = self.json_metadata.as_mut() {
-                paths.clear();
-            }
+        let current_doc = self.doc();
+        if current_doc == TERMINATED {
+            return;
+        }
+        if self.json_metadata_doc == Some(current_doc) {
             return;
         }
         let Some(json_metadata) = self.json_metadata.as_mut() else {
             return;
         };
-        let Some(indexes) = self.json_metadata_indexes.as_ref() else {
-            json_metadata.clear();
+        let Some(position_reader) = self.position_reader.as_mut() else {
+            self.json_metadata = None;
+            self.json_metadata_doc = None;
             return;
         };
-        let Some(position_reader) = self.position_reader.as_ref() else {
-            json_metadata.clear();
+        if !position_reader.has_json_metadata() {
+            self.json_metadata = None;
+            self.json_metadata_doc = None;
             return;
-        };
-        json_metadata.clear();
-        for &idx in indexes {
-            if let Some(path) = position_reader.json_path_entries(idx) {
-                json_metadata.push(path.to_vec());
-            }
+        }
+        if position_reader.fill_doc_json_metadata_refs(current_doc, json_metadata) {
+            self.json_metadata_doc = Some(current_doc);
+        } else {
+            json_metadata.clear();
+            self.json_metadata_doc = Some(current_doc);
         }
     }
 }

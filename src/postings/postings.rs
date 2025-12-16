@@ -1,3 +1,7 @@
+use std::sync::Arc;
+
+use std::sync::Arc;
+
 use common::json_path_writer::JsonArrayPathEntry;
 
 use crate::docset::DocSet;
@@ -35,12 +39,7 @@ pub trait Postings: DocSet + 'static {
     }
 
     /// Returns the JSON array path stacks for the current document if available.
-    fn json_array_paths(&mut self) -> Option<&[Vec<JsonArrayPathEntry>]> {
-        None
-    }
-
-    /// Returns the JSON array path dictionary indexes for the current document if available.
-    fn json_array_path_indexes(&mut self) -> Option<&[u32]> {
+    fn json_array_paths(&mut self) -> Option<&[Arc<[JsonArrayPathEntry]>]> {
         None
     }
 }
@@ -54,11 +53,7 @@ impl Postings for Box<dyn Postings> {
         (**self).append_positions_with_offset(offset, output);
     }
 
-    fn json_array_paths(&mut self) -> Option<&[Vec<JsonArrayPathEntry>]> {
+    fn json_array_paths(&mut self) -> Option<&[Arc<[JsonArrayPathEntry]>]> {
         (**self).json_array_paths()
-    }
-
-    fn json_array_path_indexes(&mut self) -> Option<&[u32]> {
-        (**self).json_array_path_indexes()
     }
 }

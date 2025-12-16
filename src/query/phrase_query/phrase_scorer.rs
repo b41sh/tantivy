@@ -1,5 +1,7 @@
 use std::cmp::Ordering;
 
+use std::sync::Arc;
+
 use common::json_path_writer::JsonArrayPathEntry;
 
 use crate::docset::DocSet;
@@ -63,7 +65,7 @@ pub struct PhraseScorer<TPostings: Postings> {
     positions_buffer: Vec<u32>,
     slops_buffer: Vec<u8>,
     json_constraint_key: Option<JsonConstraintKey>,
-    json_metadata: Option<Vec<Vec<JsonArrayPathEntry>>>,
+    json_metadata: Option<Vec<Arc<[JsonArrayPathEntry]>>>,
     json_metadata_doc: Option<DocId>,
 }
 
@@ -529,7 +531,7 @@ impl<TPostings: Postings> PhraseScorer<TPostings> {
         self.slop > 0
     }
 
-    fn ensure_json_metadata(&mut self) -> Option<&[Vec<JsonArrayPathEntry>]> {
+    fn ensure_json_metadata(&mut self) -> Option<&[Arc<[JsonArrayPathEntry]>]> {
         let mut json_metadata = self.json_metadata.take()?;
         let current_doc = self.doc();
         let mut has_metadata = None;
@@ -611,13 +613,8 @@ impl<TPostings: Postings> Scorer for PhraseScorer<TPostings> {
 }
 
 impl JsonPathScorer for PhraseScorer<SegmentPostings> {
-    fn json_array_paths_dyn(&mut self) -> Option<&[Vec<JsonArrayPathEntry>]> {
+    fn json_array_paths_dyn(&mut self) -> Option<&[Arc<[JsonArrayPathEntry]>]> {
         self.ensure_json_metadata()
-    }
-
-    fn json_array_path_indexes_dyn(&mut self) -> Option<&[u32]> {
-        let postings = self.intersection_docset.docset_mut_specialized(0);
-        postings.postings_mut().json_array_path_indexes()
     }
 }
 

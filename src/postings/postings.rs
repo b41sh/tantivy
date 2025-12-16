@@ -1,7 +1,5 @@
 use std::sync::Arc;
 
-use std::sync::Arc;
-
 use common::json_path_writer::JsonArrayPathEntry;
 
 use crate::docset::DocSet;

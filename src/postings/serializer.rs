@@ -111,6 +111,7 @@ pub struct FieldSerializer<'a> {
     current_term_info: TermInfo,
     term_open: bool,
     json_metadata: Option<JsonTermMetadataBuilder>,
+    json_path_table: Option<JsonPathTableBuilder>,
 }
 
 impl<'a> FieldSerializer<'a> {
@@ -143,13 +144,10 @@ impl<'a> FieldSerializer<'a> {
             None
         };
 
-        let json_metadata = if matches!(field_type, FieldType::JsonObject(_))
-            && index_record_option.has_positions()
-        {
-            Some(JsonTermMetadataBuilder::default())
-        } else {
-            None
-        };
+        let supports_json = matches!(field_type, FieldType::JsonObject(_))
+            && index_record_option.has_positions();
+        let json_metadata = supports_json.then(JsonTermMetadataBuilder::default);
+        let json_path_table = supports_json.then(JsonPathTableBuilder::new);
         Ok(FieldSerializer {
             term_dictionary_builder,
             postings_serializer,
@@ -157,6 +155,7 @@ impl<'a> FieldSerializer<'a> {
             current_term_info: TermInfo::default(),
             term_open: false,
             json_metadata,
+             json_path_table,
         })
     }
 
@@ -224,8 +223,10 @@ impl<'a> FieldSerializer<'a> {
         metadata: &[Vec<JsonArrayPathEntry>],
     ) {
         self.write_doc(doc_id, term_freq, position_deltas);
-        if let Some(builder) = self.json_metadata.as_mut() {
-            builder.add_doc(doc_id, metadata);
+        if let (Some(builder), Some(path_table)) =
+            (self.json_metadata.as_mut(), self.json_path_table.as_mut())
+        {
+            builder.add_doc(doc_id, metadata, path_table);
         } else {
             debug_assert!(metadata.is_empty());
         }
@@ -265,6 +266,12 @@ impl<'a> FieldSerializer<'a> {
     /// Closes the current field.
     pub fn close(mut self) -> io::Result<()> {
         self.close_term()?;
+        if let Some(positions_serializer) = self.positions_serializer_opt.as_mut() {
+            if let Some(path_table) = self.json_path_table.take() {
+                let paths = path_table.finalize();
+                positions_serializer.append_json_path_table(&paths)?;
+            }
+        }
         if let Some(positions_serializer) = self.positions_serializer_opt {
             positions_serializer.close()?;
         }
@@ -275,24 +282,57 @@ impl<'a> FieldSerializer<'a> {
 }
 
 #[derive(Default)]
+struct JsonPathTableBuilder {
+    paths: FxHashMap<Vec<JsonArrayPathEntry>, u32>,
+}
+
+impl JsonPathTableBuilder {
+    fn new() -> Self {
+        JsonPathTableBuilder {
+            paths: FxHashMap::default(),
+        }
+    }
+
+    fn get_or_insert_id(&mut self, path: &[JsonArrayPathEntry]) -> u32 {
+        if path.is_empty() {
+            return 0u32;
+        }
+        let next_index = (self.paths.len() + 1) as u32;
+        *self.paths.entry(path.to_vec()).or_insert(next_index)
+    }
+
+    fn finalize(self) -> Vec<Vec<JsonArrayPathEntry>> {
+        if self.paths.is_empty() {
+            return vec![Vec::new()];
+        }
+        let mut table = vec![Vec::new(); self.paths.len() + 1];
+        for (path, idx) in self.paths {
+            table[idx as usize] = path;
+        }
+        table
+    }
+}
+
+#[derive(Default)]
 struct JsonTermMetadataBuilder {
-    json_array_paths_map: FxHashMap<Vec<JsonArrayPathEntry>, u32>,
     doc_entries: Vec<(DocId, Vec<u32>)>,
+    block_encoder: BlockEncoder,
 }
 
 impl JsonTermMetadataBuilder {
-    fn add_doc(&mut self, doc_id: DocId, metadata: &[Vec<JsonArrayPathEntry>]) {
+    fn add_doc(
+        &mut self,
+        doc_id: DocId,
+        metadata: &[Vec<JsonArrayPathEntry>],
+        path_table: &mut JsonPathTableBuilder,
+    ) {
         let mut indexes = Vec::new();
         let mut seen = FxHashSet::default();
         for json_array_path in metadata {
-            if json_array_path.is_empty() {
+            let index = path_table.get_or_insert_id(json_array_path);
+            if index == 0 {
                 continue;
             }
-            let next_index = self.json_array_paths_map.len() as u32;
-            let index = *self
-                .json_array_paths_map
-                .entry(json_array_path.clone())
-                .or_insert(next_index);
             if seen.insert(index) {
                 indexes.push(index);
             }
@@ -303,105 +343,63 @@ impl JsonTermMetadataBuilder {
     }
 
     fn take_encoded_metadata(&mut self) -> Option<Vec<u8>> {
-        if self.json_array_paths_map.is_empty() || self.doc_entries.is_empty() {
-            self.doc_entries.clear();
+        if self.doc_entries.is_empty() {
             return None;
         }
-
-        let path_count = self.json_array_paths_map.len();
-        let mut paths = vec![Vec::new(); path_count];
-        for (path, index) in self.json_array_paths_map.drain() {
-            let pos = index as usize;
-            paths[pos] = path;
-        }
-
+        self.doc_entries.sort_by_key(|(doc_id, _)| *doc_id);
         let mut bytes = Vec::new();
-        write_u32_vint(paths.len() as u32, &mut bytes).expect("writing to Vec cannot fail");
-        for path in &paths {
-            write_u32_vint(path.len() as u32, &mut bytes).expect("writing to Vec cannot fail");
-            for entry in path {
-                write_u32_vint(entry.path_id, &mut bytes).expect("writing to Vec cannot fail");
-                write_u32_vint(entry.element_ord, &mut bytes).expect("writing to Vec cannot fail");
-            }
-        }
+        // version marker to differentiate from legacy encoding.
+        write_u32_vint(0, &mut bytes).expect("writing to Vec cannot fail");
 
-        let doc_count = self.doc_entries.len();
-        write_u32_vint(doc_count as u32, &mut bytes).expect("writing to Vec cannot fail");
+        let num_docs = self.doc_entries.len();
+        write_u32_vint(num_docs as u32, &mut bytes).expect("writing to Vec cannot fail");
         let mut prev_doc = 0u32;
         for (doc_id, _) in &self.doc_entries {
             write_u32_vint(doc_id - prev_doc, &mut bytes).expect("writing to Vec cannot fail");
             prev_doc = *doc_id;
         }
 
-        if path_count == 1 {
-            // no extra encoding needed; all docs use path 0
-        } else if path_count == 2 {
-            let mut packed: u32 = 0;
-            let mut count = 0;
-            for (_, indexes) in &self.doc_entries {
-                let has_first = indexes.iter().any(|&idx| idx == 0);
-                let has_second = indexes.iter().any(|&idx| idx == 1);
-                let state = match (has_first, has_second) {
-                    (false, false) => 0u32,
-                    (true, false) => 1u32,
-                    (false, true) => 2u32,
-                    (true, true) => 3u32,
-                };
-                packed |= state << (count * 2);
-                count += 1;
-                if count == 16 {
-                    write_u32_vint(packed, &mut bytes).expect("writing to Vec cannot fail");
-                    packed = 0;
-                    count = 0;
-                }
-            }
-            if count > 0 {
-                write_u32_vint(packed, &mut bytes).expect("writing to Vec cannot fail");
-            }
-        } else if path_count <= 4 {
-            let mut packed: u8 = 0;
-            let mut half = 0;
-            for (_, indexes) in &self.doc_entries {
-                let mut mask = 0u8;
-                for &idx in indexes {
-                    if idx < 4 {
-                        mask |= 1u8 << idx;
-                    }
-                }
-                packed |= if half == 0 { mask } else { mask << 4 };
-                half += 1;
-                if half == 2 {
-                    write_u32_vint(packed as u32, &mut bytes).expect("writing to Vec cannot fail");
-                    packed = 0;
-                    half = 0;
-                }
-            }
-            if half > 0 {
-                write_u32_vint(packed as u32, &mut bytes).expect("writing to Vec cannot fail");
-            }
-        } else if path_count <= 32 {
-            for (_, indexes) in &self.doc_entries {
-                let mut bitmap: u32 = 0;
-                for &idx in indexes {
-                    if idx < 32 {
-                        bitmap |= 1u32 << idx;
-                    }
-                }
-                write_u32_vint(bitmap, &mut bytes).expect("writing to Vec cannot fail");
-            }
-        } else {
-            for (_, indexes) in &self.doc_entries {
-                write_u32_vint(indexes.len() as u32, &mut bytes)
-                    .expect("writing to Vec cannot fail");
-                for idx in indexes {
-                    write_u32_vint(*idx, &mut bytes).expect("writing to Vec cannot fail");
-                }
-            }
+        let counts: Vec<u32> = self
+            .doc_entries
+            .iter()
+            .map(|(_, indexes)| indexes.len() as u32)
+            .collect();
+        Self::encode_bitpacked(&counts, &mut bytes, &mut self.block_encoder);
+
+        let total_indexes: u32 = counts.iter().copied().sum();
+        write_u32_vint(total_indexes, &mut bytes).expect("writing to Vec cannot fail");
+
+        let mut flat_indexes = Vec::with_capacity(total_indexes as usize);
+        for (_, indexes) in &self.doc_entries {
+            flat_indexes.extend(indexes.iter().copied());
         }
+        Self::encode_bitpacked(&flat_indexes, &mut bytes, &mut self.block_encoder);
 
         self.doc_entries.clear();
-        self.json_array_paths_map.clear();
         Some(bytes)
+    }
+
+    fn encode_bitpacked(
+        values: &[u32],
+        bytes: &mut Vec<u8>,
+        block_encoder: &mut BlockEncoder,
+    ) {
+        let num_blocks = values.len() / COMPRESSION_BLOCK_SIZE;
+        write_u32_vint(num_blocks as u32, bytes).expect("writing to Vec cannot fail");
+        let mut bit_widths = Vec::with_capacity(num_blocks);
+        let mut block_bytes = Vec::new();
+        for block in values.chunks_exact(COMPRESSION_BLOCK_SIZE) {
+            let (bit_width, encoded) = block_encoder.compress_block_unsorted(block, false);
+            bit_widths.push(bit_width);
+            block_bytes.extend_from_slice(encoded);
+        }
+        bytes.extend_from_slice(&bit_widths);
+        bytes.extend_from_slice(&block_bytes);
+
+        let remainder = values.chunks_exact(COMPRESSION_BLOCK_SIZE).remainder();
+        for &val in remainder {
+            write_u32_vint(val, bytes).expect("writing to Vec cannot fail");
+        }
     }
 }
 

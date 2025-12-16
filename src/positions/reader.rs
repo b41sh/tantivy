@@ -5,8 +5,12 @@ use std::sync::Arc;
 
 use common::json_path_writer::JsonArrayPathEntry;
 use common::{read_u32_vint, BinarySerializable, VInt};
+use rustc_hash::FxHashMap;
+
 use crate::directory::OwnedBytes;
-use crate::positions::{COMPRESSION_BLOCK_SIZE, JSON_METADATA_MARKER};
+use crate::positions::{
+    COMPRESSION_BLOCK_SIZE, JSON_METADATA_MARKER, JSON_PATH_TABLE_MARKER,
+};
 use crate::postings::compression::{BlockDecoder, VIntDecoder};
 use crate::DocId;
 
@@ -20,41 +24,27 @@ use crate::DocId;
 /// so skipping a block without decompressing it is just a matter of advancing that many
 /// bytes.
 
-#[derive(Clone)]
 pub struct PositionReader {
     bit_widths: OwnedBytes,
     positions: OwnedBytes,
-    json_paths: Vec<Arc<[JsonArrayPathEntry]>>,
-    json_doc_ids: Vec<DocId>,
-    json_doc_indexes: Vec<Vec<u32>>,
-    json_doc_cursor: usize,
-
     block_decoder: BlockDecoder,
-
-    // offset, expressed in positions, for the first position of the block currently loaded
-    // block_offset is a multiple of COMPRESSION_BLOCK_SIZE.
     block_offset: u64,
-    // offset, expressed in positions, for the position of the first block encoded
-    // in the `self.positions` bytes, and if bitpacked, compressed using the bitwidth in
-    // `self.bit_widths`.
-    //
-    // As we advance, anchor increases simultaneously with bit_widths and positions get consumed.
     anchor_offset: u64,
-
-    // These are just copies used for .reset().
     original_bit_widths: OwnedBytes,
     original_positions: OwnedBytes,
+    json_metadata: JsonMetadata,
 }
 
 impl PositionReader {
     /// Open and reads the term positions encoded into the positions_data owned bytes.
-    pub fn open(mut positions_data: OwnedBytes) -> io::Result<PositionReader> {
+    pub fn open(
+        mut positions_data: OwnedBytes,
+        json_path_table: Option<Arc<Vec<Arc<[JsonArrayPathEntry]>>>>,
+    ) -> io::Result<PositionReader> {
         let num_positions_bitpacked_blocks = VInt::deserialize(&mut positions_data)?.0 as usize;
         let (bit_widths, positions) = positions_data.split(num_positions_bitpacked_blocks);
-        let mut json_paths = Vec::new();
-        let mut json_doc_ids = Vec::new();
-        let mut json_doc_indexes = Vec::new();
         let mut positions = positions;
+        let mut json_metadata = JsonMetadata::None;
         if positions.len() > 5 {
             let slice = positions.as_slice();
             let marker_idx = slice.len() - 5;
@@ -65,111 +55,9 @@ impl PositionReader {
                         .unwrap(),
                 ) as usize;
                 if marker_idx >= meta_len {
-                    let metadata_slice =
-                        &slice[marker_idx - meta_len..marker_idx];
-                    let mut cursor = metadata_slice;
-                    if !cursor.is_empty() {
-                        let path_count = read_u32_vint(&mut cursor) as usize;
-                        json_paths.reserve(path_count);
-                        for _ in 0..path_count {
-                            let depth = read_u32_vint(&mut cursor) as usize;
-                            let mut path = Vec::with_capacity(depth);
-                            for _ in 0..depth {
-                                let path_id = read_u32_vint(&mut cursor);
-                                let element_ord = read_u32_vint(&mut cursor);
-                                path.push(JsonArrayPathEntry {
-                                    path_id,
-                                    element_ord,
-                                });
-                            }
-                            json_paths.push(Arc::from(path.into_boxed_slice()));
-                        }
-                        let doc_count = read_u32_vint(&mut cursor) as usize;
-                        let mut doc_ids = Vec::with_capacity(doc_count);
-                        let mut prev_doc = 0u32;
-                        for _ in 0..doc_count {
-                            let delta = read_u32_vint(&mut cursor);
-                            let doc_id = prev_doc.wrapping_add(delta);
-                            doc_ids.push(doc_id);
-                            prev_doc = doc_id;
-                        }
-                        let mut doc_indexes: Vec<Vec<u32>> = Vec::with_capacity(doc_count);
-                        if path_count == 1 {
-                            for _ in 0..doc_count {
-                                doc_indexes.push(vec![0u32]);
-                            }
-                        } else if path_count == 2 {
-                            let mut processed = 0;
-                            while processed < doc_count {
-                                let word = read_u32_vint(&mut cursor);
-                                for shift in 0..16 {
-                                    if processed == doc_count {
-                                        break;
-                                    }
-                                    let state = (word >> (shift * 2)) & 0b11;
-                                    let mut indexes = Vec::new();
-                                    if state & 0b01 != 0 {
-                                        indexes.push(0u32);
-                                    }
-                                    if state & 0b10 != 0 {
-                                        indexes.push(1u32);
-                                    }
-                                    doc_indexes.push(indexes);
-                                    processed += 1;
-                                }
-                            }
-                        } else if path_count <= 4 {
-                            let mut processed = 0;
-                            while processed < doc_count {
-                                let chunk = read_u32_vint(&mut cursor) as u8;
-                                for i in 0..2 {
-                                    if processed == doc_count {
-                                        break;
-                                    }
-                                    let mask = (chunk >> (i * 4)) & 0xF;
-                                    let mut indexes = Vec::new();
-                                    if mask & 0x1 != 0 {
-                                        indexes.push(0u32);
-                                    }
-                                    if mask & 0x2 != 0 {
-                                        indexes.push(1u32);
-                                    }
-                                    if mask & 0x4 != 0 {
-                                        indexes.push(2u32);
-                                    }
-                                    if mask & 0x8 != 0 {
-                                        indexes.push(3u32);
-                                    }
-                                    doc_indexes.push(indexes);
-                                    processed += 1;
-                                }
-                            }
-                        } else if path_count <= 32 {
-                            for _ in 0..doc_count {
-                                let bitmap = read_u32_vint(&mut cursor);
-                                let mut indexes = Vec::new();
-                                for idx in 0..path_count.min(32) {
-                                    if (bitmap >> idx) & 1 == 1 {
-                                        indexes.push(idx as u32);
-                                    }
-                                }
-                                doc_indexes.push(indexes);
-                            }
-                        } else {
-                            for _ in 0..doc_count {
-                                let num_paths =
-                                    read_u32_vint(&mut cursor) as usize;
-                                let mut indexes =
-                                    Vec::with_capacity(num_paths);
-                                for _ in 0..num_paths {
-                                    indexes.push(read_u32_vint(&mut cursor));
-                                }
-                                doc_indexes.push(indexes);
-                            }
-                        }
-                        json_doc_ids = doc_ids;
-                        json_doc_indexes = doc_indexes;
-                    }
+                    let metadata_bytes = positions.slice(marker_idx - meta_len..marker_idx);
+                    json_metadata =
+                        parse_json_metadata(metadata_bytes.clone(), json_path_table.clone())?;
                     positions = positions.slice(0..marker_idx - meta_len);
                 }
             }
@@ -177,15 +65,12 @@ impl PositionReader {
         Ok(PositionReader {
             bit_widths: bit_widths.clone(),
             positions: positions.clone(),
-            json_paths,
-            json_doc_ids,
-            json_doc_indexes,
-            json_doc_cursor: 0,
             block_decoder: BlockDecoder::default(),
             block_offset: i64::MAX as u64,
             anchor_offset: 0u64,
             original_bit_widths: bit_widths,
             original_positions: positions,
+            json_metadata,
         })
     }
 
@@ -194,7 +79,6 @@ impl PositionReader {
         self.bit_widths = self.original_bit_widths.clone();
         self.block_offset = i64::MAX as u64;
         self.anchor_offset = 0u64;
-        self.json_doc_cursor = 0;
     }
 
     /// Advance from num_blocks bitpacked blocks.
@@ -284,7 +168,7 @@ impl PositionReader {
     }
 
     pub fn has_json_metadata(&self) -> bool {
-        !self.json_paths.is_empty() && !self.json_doc_ids.is_empty()
+        !matches!(self.json_metadata, JsonMetadata::None)
     }
 
     pub fn fill_doc_json_metadata_refs(
@@ -292,34 +176,435 @@ impl PositionReader {
         doc_id: DocId,
         output: &mut Vec<Arc<[JsonArrayPathEntry]>>,
     ) -> bool {
-        if self.json_doc_ids.is_empty() {
-            output.clear();
-            return false;
-        }
-        while self.json_doc_cursor < self.json_doc_ids.len()
-            && self.json_doc_ids[self.json_doc_cursor] < doc_id
-        {
-            self.json_doc_cursor += 1;
-        }
-        if self.json_doc_cursor >= self.json_doc_ids.len()
-            || self.json_doc_ids[self.json_doc_cursor] != doc_id
-        {
-            output.clear();
-            return false;
-        }
-        output.clear();
-        for &idx in &self.json_doc_indexes[self.json_doc_cursor] {
-            if let Some(path) = self.json_paths.get(idx as usize) {
-                output.push(path.clone());
+        match &mut self.json_metadata {
+            JsonMetadata::None => {
+                output.clear();
+                false
             }
+            JsonMetadata::Legacy(legacy) => legacy.fill(doc_id, output),
+            JsonMetadata::Indexed(indexed) => indexed.fill(doc_id, output),
         }
-        true
     }
 
     fn disable_metadata(&mut self) {
-        self.json_paths.clear();
-        self.json_doc_ids.clear();
-        self.json_doc_indexes.clear();
-        self.json_doc_cursor = 0;
+        self.json_metadata = JsonMetadata::None;
+    }
+}
+
+fn read_vint_and_update(cursor: &mut &[u8], consumed: &mut usize) -> u32 {
+    let before = cursor.len();
+    let val = read_u32_vint(cursor);
+    *consumed += before - cursor.len();
+    val
+}
+
+fn read_byte_and_update(cursor: &mut &[u8], consumed: &mut usize) -> u8 {
+    let byte = cursor[0];
+    *cursor = &cursor[1..];
+    *consumed += 1;
+    byte
+}
+
+fn parse_json_metadata(
+    metadata_bytes: OwnedBytes,
+    global_paths: Option<Arc<Vec<Arc<[JsonArrayPathEntry]>>>>,
+) -> io::Result<JsonMetadata> {
+    if metadata_bytes.is_empty() {
+        return Ok(JsonMetadata::None);
+    }
+    let mut cursor = metadata_bytes.as_slice();
+    let mut consumed = 0usize;
+    let header = read_vint_and_update(&mut cursor, &mut consumed);
+    if header == 0 {
+        if let Some(global_paths) = global_paths {
+            parse_indexed_metadata(metadata_bytes, cursor, consumed, global_paths)
+        } else {
+            Ok(JsonMetadata::None)
+        }
+    } else {
+        parse_legacy_metadata(metadata_bytes, cursor, consumed, header as usize)
+    }
+}
+
+fn parse_indexed_metadata(
+    metadata_bytes: OwnedBytes,
+    mut cursor: &[u8],
+    mut consumed: usize,
+    global_paths: Arc<Vec<Arc<[JsonArrayPathEntry]>>>,
+) -> io::Result<JsonMetadata> {
+    let num_docs = read_vint_and_update(&mut cursor, &mut consumed) as usize;
+    if num_docs == 0 {
+        return Ok(JsonMetadata::None);
+    }
+    let mut doc_ids = Vec::with_capacity(num_docs);
+    let mut prev_doc = 0u32;
+    for _ in 0..num_docs {
+        let delta = read_vint_and_update(&mut cursor, &mut consumed);
+        let doc = prev_doc.wrapping_add(delta);
+        doc_ids.push(doc);
+        prev_doc = doc;
+    }
+    let counts =
+        decode_bitpacked_values(&metadata_bytes, &mut cursor, &mut consumed, num_docs)?;
+    let total_indexes = read_vint_and_update(&mut cursor, &mut consumed) as usize;
+    let indexes =
+        JsonIndexBlocks::parse(metadata_bytes, &mut cursor, &mut consumed, total_indexes)?;
+    let mut prefix_sums = Vec::with_capacity(counts.len());
+    let mut sum = 0u32;
+    for count in &counts {
+        sum += *count;
+        prefix_sums.push(sum);
+    }
+    debug_assert_eq!(sum as usize, total_indexes);
+    Ok(JsonMetadata::Indexed(JsonIndexedMetadata {
+        doc_ids,
+        counts,
+        prefix_sums,
+        indexes,
+        scratch: Vec::new(),
+        global_paths,
+    }))
+}
+
+fn parse_legacy_metadata(
+    metadata_bytes: OwnedBytes,
+    mut cursor: &[u8],
+    mut consumed: usize,
+    path_count: usize,
+) -> io::Result<JsonMetadata> {
+    if path_count == 0 {
+        return Ok(JsonMetadata::None);
+    }
+    let mut paths = Vec::with_capacity(path_count);
+    for _ in 0..path_count {
+        let depth = read_vint_and_update(&mut cursor, &mut consumed) as usize;
+        let mut path = Vec::with_capacity(depth);
+        for _ in 0..depth {
+            let path_id = read_vint_and_update(&mut cursor, &mut consumed);
+            let element_ord = read_vint_and_update(&mut cursor, &mut consumed);
+            path.push(JsonArrayPathEntry { path_id, element_ord });
+        }
+        paths.push(Arc::from(path.into_boxed_slice()));
+    }
+    let doc_count = read_vint_and_update(&mut cursor, &mut consumed) as usize;
+    let mut doc_ids = Vec::with_capacity(doc_count);
+    let mut prev_doc = 0u32;
+    for _ in 0..doc_count {
+        let delta = read_vint_and_update(&mut cursor, &mut consumed);
+        let doc_id = prev_doc.wrapping_add(delta);
+        doc_ids.push(doc_id);
+        prev_doc = doc_id;
+    }
+    let mut doc_indexes: Vec<Vec<u32>> = Vec::with_capacity(doc_count);
+    if path_count == 1 {
+        for _ in 0..doc_count {
+            doc_indexes.push(vec![0u32]);
+        }
+    } else if path_count == 2 {
+        let mut processed = 0usize;
+        while processed < doc_count {
+            let word = read_vint_and_update(&mut cursor, &mut consumed);
+            for shift in 0..16 {
+                if processed == doc_count {
+                    break;
+                }
+                let state = (word >> (shift * 2)) & 0b11;
+                let mut indexes = Vec::new();
+                if state & 0b01 != 0 {
+                    indexes.push(0u32);
+                }
+                if state & 0b10 != 0 {
+                    indexes.push(1u32);
+                }
+                doc_indexes.push(indexes);
+                processed += 1;
+            }
+        }
+    } else if path_count <= 4 {
+        let mut processed = 0usize;
+        while processed < doc_count {
+            let chunk = read_vint_and_update(&mut cursor, &mut consumed) as u8;
+            for i in 0..2 {
+                if processed == doc_count {
+                    break;
+                }
+                let mask = (chunk >> (i * 4)) & 0xF;
+                let mut indexes = Vec::new();
+                if mask & 0x1 != 0 {
+                    indexes.push(0u32);
+                }
+                if mask & 0x2 != 0 {
+                    indexes.push(1u32);
+                }
+                if mask & 0x4 != 0 {
+                    indexes.push(2u32);
+                }
+                if mask & 0x8 != 0 {
+                    indexes.push(3u32);
+                }
+                doc_indexes.push(indexes);
+                processed += 1;
+            }
+        }
+    } else if path_count <= 32 {
+        for _ in 0..doc_count {
+            let bitmap = read_vint_and_update(&mut cursor, &mut consumed);
+            let mut indexes = Vec::new();
+            for idx in 0..path_count.min(32) {
+                if (bitmap >> idx) & 1 == 1 {
+                    indexes.push(idx as u32);
+                }
+            }
+            doc_indexes.push(indexes);
+        }
+    } else {
+        for _ in 0..doc_count {
+            let num_paths = read_vint_and_update(&mut cursor, &mut consumed) as usize;
+            let mut indexes = Vec::with_capacity(num_paths);
+            for _ in 0..num_paths {
+                indexes.push(read_vint_and_update(&mut cursor, &mut consumed));
+            }
+            doc_indexes.push(indexes);
+        }
+    }
+    let mut doc_paths: FxHashMap<DocId, Vec<Arc<[JsonArrayPathEntry]>>> =
+        FxHashMap::default();
+    for (idx, doc_id) in doc_ids.into_iter().enumerate() {
+        if let Some(indexes) = doc_indexes.get(idx) {
+            if indexes.is_empty() {
+                continue;
+            }
+            let mut entries = Vec::new();
+            for index in indexes {
+                if let Some(path) = paths.get(*index as usize) {
+                    entries.push(path.clone());
+                }
+            }
+            if !entries.is_empty() {
+                doc_paths.insert(doc_id, entries);
+            }
+        }
+    }
+    Ok(JsonMetadata::Legacy(JsonLegacyMetadata { doc_paths }))
+}
+
+fn decode_bitpacked_values(
+    metadata_bytes: &OwnedBytes,
+    cursor: &mut &[u8],
+    consumed: &mut usize,
+    num_values: usize,
+) -> io::Result<Vec<u32>> {
+    let num_blocks = read_vint_and_update(cursor, consumed) as usize;
+    let mut bit_widths = Vec::with_capacity(num_blocks);
+    for _ in 0..num_blocks {
+        bit_widths.push(read_byte_and_update(cursor, consumed));
+    }
+    let mut block_offsets = Vec::with_capacity(num_blocks);
+    let mut total_block_bytes = 0usize;
+    for &bit_width in &bit_widths {
+        block_offsets.push(total_block_bytes);
+        total_block_bytes += (bit_width as usize * COMPRESSION_BLOCK_SIZE) / 8;
+    }
+    let block_data = metadata_bytes.slice(*consumed..*consumed + total_block_bytes);
+    *cursor = &cursor[total_block_bytes..];
+    *consumed += total_block_bytes;
+    let remainder = num_values % COMPRESSION_BLOCK_SIZE;
+    let mut remainder_values = Vec::with_capacity(remainder);
+    for _ in 0..remainder {
+        remainder_values.push(read_vint_and_update(cursor, consumed));
+    }
+    let mut values = Vec::with_capacity(num_values);
+    let mut decoder = BlockDecoder::default();
+    let data_slice = block_data.as_slice();
+    for (block_idx, &bit_width) in bit_widths.iter().enumerate() {
+        let offset = block_offsets[block_idx];
+        if bit_width == 0 {
+            values.extend(std::iter::repeat(0u32).take(COMPRESSION_BLOCK_SIZE));
+        } else {
+            decoder.uncompress_block_unsorted(
+                &data_slice[offset..offset + (bit_width as usize * COMPRESSION_BLOCK_SIZE / 8)],
+                bit_width,
+                false,
+            );
+            values.extend_from_slice(decoder.output_array());
+        }
+    }
+    values.truncate(num_values - remainder);
+    values.extend(remainder_values);
+    Ok(values)
+}
+
+enum JsonMetadata {
+    None,
+    Legacy(JsonLegacyMetadata),
+    Indexed(JsonIndexedMetadata),
+}
+
+struct JsonLegacyMetadata {
+    doc_paths: FxHashMap<DocId, Vec<Arc<[JsonArrayPathEntry]>>>,
+}
+
+impl JsonLegacyMetadata {
+    fn fill(
+        &self,
+        doc_id: DocId,
+        output: &mut Vec<Arc<[JsonArrayPathEntry]>>,
+    ) -> bool {
+        if let Some(paths) = self.doc_paths.get(&doc_id) {
+            output.clear();
+            output.extend(paths.iter().cloned());
+            !output.is_empty()
+        } else {
+            output.clear();
+            false
+        }
+    }
+}
+
+struct JsonIndexedMetadata {
+    doc_ids: Vec<DocId>,
+    counts: Vec<u32>,
+    prefix_sums: Vec<u32>,
+    indexes: JsonIndexBlocks,
+    scratch: Vec<u32>,
+    global_paths: Arc<Vec<Arc<[JsonArrayPathEntry]>>>,
+}
+
+impl JsonIndexedMetadata {
+    fn fill(
+        &mut self,
+        doc_id: DocId,
+        output: &mut Vec<Arc<[JsonArrayPathEntry]>>,
+    ) -> bool {
+        match self.doc_ids.binary_search(&doc_id) {
+            Ok(pos) => {
+                let count = self.counts[pos] as usize;
+                if count == 0 {
+                    output.clear();
+                    return false;
+                }
+                let start = if pos == 0 {
+                    0
+                } else {
+                    self.prefix_sums[pos - 1] as usize
+                };
+                self.indexes
+                    .read_range(start, count, &mut self.scratch);
+                output.clear();
+                for idx in &self.scratch {
+                    if *idx == 0 {
+                        continue;
+                    }
+                    if let Some(path) = self.global_paths.get(*idx as usize) {
+                        output.push(path.clone());
+                    }
+                }
+                !output.is_empty()
+            }
+            Err(_) => {
+                output.clear();
+                false
+            }
+        }
+    }
+}
+
+struct JsonIndexBlocks {
+    bit_widths: Vec<u8>,
+    block_offsets: Vec<usize>,
+    blocks_data: OwnedBytes,
+    tail_values: Vec<u32>,
+    block_decoder: BlockDecoder,
+    decoded_block: Vec<u32>,
+    decoded_block_idx: Option<usize>,
+}
+
+impl JsonIndexBlocks {
+    fn parse(
+        metadata_bytes: OwnedBytes,
+        cursor: &mut &[u8],
+        consumed: &mut usize,
+        total_indexes: usize,
+    ) -> io::Result<JsonIndexBlocks> {
+        let num_blocks = read_vint_and_update(cursor, consumed) as usize;
+        let mut bit_widths = Vec::with_capacity(num_blocks);
+        for _ in 0..num_blocks {
+            bit_widths.push(read_byte_and_update(cursor, consumed));
+        }
+        let mut block_offsets = Vec::with_capacity(num_blocks);
+        let mut total_block_bytes = 0usize;
+        for &bit_width in &bit_widths {
+            block_offsets.push(total_block_bytes);
+            total_block_bytes += (bit_width as usize * COMPRESSION_BLOCK_SIZE) / 8;
+        }
+        let block_data = metadata_bytes.slice(*consumed..*consumed + total_block_bytes);
+        *cursor = &cursor[total_block_bytes..];
+        *consumed += total_block_bytes;
+        let remainder = total_indexes % COMPRESSION_BLOCK_SIZE;
+        let mut tail_values = Vec::with_capacity(remainder);
+        for _ in 0..remainder {
+            tail_values.push(read_vint_and_update(cursor, consumed));
+        }
+        Ok(JsonIndexBlocks {
+            bit_widths,
+            block_offsets,
+            blocks_data: block_data,
+            tail_values,
+            block_decoder: BlockDecoder::default(),
+            decoded_block: vec![0u32; COMPRESSION_BLOCK_SIZE],
+            decoded_block_idx: None,
+        })
+    }
+
+    fn read_range(&mut self, start: usize, len: usize, output: &mut Vec<u32>) {
+        output.clear();
+        if len == 0 {
+            return;
+        }
+        let tail_start = self.bit_widths.len() * COMPRESSION_BLOCK_SIZE;
+        let mut offset = start;
+        let mut remaining = len;
+        while remaining > 0 {
+            if offset >= tail_start {
+                let tail_idx = offset - tail_start;
+                let take = remaining.min(self.tail_values.len().saturating_sub(tail_idx));
+                output.extend_from_slice(&self.tail_values[tail_idx..tail_idx + take]);
+                offset += take;
+                remaining -= take;
+                continue;
+            }
+            let block_idx = offset / COMPRESSION_BLOCK_SIZE;
+            self.ensure_block(block_idx);
+            let within_block = offset % COMPRESSION_BLOCK_SIZE;
+            let take = remaining.min(COMPRESSION_BLOCK_SIZE - within_block);
+            output.extend_from_slice(
+                &self.decoded_block[within_block..within_block + take],
+            );
+            offset += take;
+            remaining -= take;
+        }
+    }
+
+    fn ensure_block(&mut self, block_idx: usize) {
+        if self.decoded_block_idx == Some(block_idx) {
+            return;
+        }
+        if block_idx >= self.bit_widths.len() {
+            return;
+        }
+        let bit_width = self.bit_widths[block_idx];
+        if bit_width == 0 {
+            self.decoded_block.fill(0u32);
+            self.decoded_block_idx = Some(block_idx);
+            return;
+        }
+        let start = self.block_offsets[block_idx];
+        let num_bytes = (bit_width as usize * COMPRESSION_BLOCK_SIZE) / 8;
+        let data = &self.blocks_data.as_slice()[start..start + num_bytes];
+        self.block_decoder
+            .uncompress_block_unsorted(data, bit_width, false);
+        self.decoded_block
+            .copy_from_slice(self.block_decoder.output_array());
+        self.decoded_block_idx = Some(block_idx);
     }
 }

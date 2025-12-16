@@ -232,7 +232,6 @@ mod tests {
     use crate::schema::{IndexRecordOption, Schema, TEXT};
     use crate::{doc, Index, Term};
     use crate::serde_json::json;
-    use crate::serde_json::json;
 
     #[test]
     fn test_json_query_enforces_same_array() -> crate::Result<()> {

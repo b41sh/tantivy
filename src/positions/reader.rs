@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use common::json_path_writer::JsonArrayPathEntry;
 use common::{read_u32_vint, BinarySerializable, VInt};
-use rustc_hash::FxHashMap;
 
 use crate::directory::OwnedBytes;
 use crate::positions::{
@@ -182,7 +181,6 @@ impl PositionReader {
                 output.clear();
                 false
             }
-            JsonMetadata::Legacy(legacy) => legacy.fill(doc_id, output),
             JsonMetadata::Indexed(indexed) => indexed.fill(doc_id, output),
         }
     }
@@ -216,15 +214,16 @@ fn parse_json_metadata(
     let mut cursor = metadata_bytes.as_slice();
     let mut consumed = 0usize;
     let header = read_vint_and_update(&mut cursor, &mut consumed);
-    if header == 0 {
-        if let Some(global_paths) = global_paths {
-            parse_indexed_metadata(metadata_bytes.clone(), cursor, consumed, global_paths)
-        } else {
-            Ok(JsonMetadata::None)
-        }
-    } else {
-        parse_legacy_metadata(metadata_bytes.clone(), cursor, consumed, header as usize)
+    if header != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Unsupported JSON metadata version",
+        ));
     }
+    let Some(global_paths) = global_paths else {
+        return Ok(JsonMetadata::None);
+    };
+    parse_indexed_metadata(metadata_bytes, cursor, consumed, global_paths)
 }
 
 fn parse_indexed_metadata(
@@ -265,15 +264,6 @@ fn parse_indexed_metadata(
         scratch: Vec::new(),
         global_paths,
     }))
-}
-
-fn parse_legacy_metadata(
-    metadata_bytes: OwnedBytes,
-    mut cursor: &[u8],
-    mut consumed: usize,
-    path_count: usize,
-) -> io::Result<JsonMetadata> {
-    todo!()
 }
 
 fn decode_bitpacked_values(
@@ -322,36 +312,10 @@ fn decode_bitpacked_values(
     Ok(values)
 }
 
-#[derive(Clone)]
 enum JsonMetadata {
     None,
-    Legacy(JsonLegacyMetadata),
     Indexed(JsonIndexedMetadata),
 }
-
-#[derive(Clone)]
-struct JsonLegacyMetadata {
-    doc_paths: FxHashMap<DocId, Vec<Arc<[JsonArrayPathEntry]>>>,
-}
-
-impl JsonLegacyMetadata {
-    fn fill(
-        &self,
-        doc_id: DocId,
-        output: &mut Vec<Arc<[JsonArrayPathEntry]>>,
-    ) -> bool {
-        if let Some(paths) = self.doc_paths.get(&doc_id) {
-            output.clear();
-            output.extend(paths.iter().cloned());
-            !output.is_empty()
-        } else {
-            output.clear();
-            false
-        }
-    }
-}
-
-#[derive(Clone)]
 struct JsonIndexedMetadata {
     doc_ids: Vec<DocId>,
     counts: Vec<u32>,

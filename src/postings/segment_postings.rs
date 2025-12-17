@@ -290,6 +290,7 @@ impl SegmentPostings {
         if self.json_metadata_doc == Some(current_doc) {
             return;
         }
+        let doc_ord = self.current_doc_ord();
         let Some(json_metadata) = self.json_metadata.as_mut() else {
             return;
         };
@@ -303,7 +304,6 @@ impl SegmentPostings {
             self.json_metadata_doc = None;
             return;
         }
-        let doc_ord = self.current_doc_ord();
         if position_reader.fill_doc_json_metadata_refs(current_doc, doc_ord, json_metadata) {
             self.json_metadata_doc = Some(current_doc);
         } else {

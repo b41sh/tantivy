@@ -220,8 +220,8 @@ fn parse_json_metadata(
         return Ok(JsonMetadata::None);
     };
     match header {
-        0 => parse_indexed_metadata_v0(metadata_bytes, cursor, consumed, global_paths),
-        1 => parse_indexed_metadata_v1(metadata_bytes, cursor, consumed, global_paths),
+        0 => parse_indexed_metadata_v0(metadata_bytes.clone(), cursor, consumed, global_paths),
+        1 => parse_indexed_metadata_v1(metadata_bytes.clone(), cursor, consumed, global_paths),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "Unsupported JSON metadata version",
@@ -353,6 +353,7 @@ fn decode_bitpacked_values(
     Ok(values)
 }
 
+#[derive(Clone)]
 enum JsonMetadata {
     None,
     Indexed(JsonIndexedMetadata),
@@ -365,6 +366,8 @@ impl JsonMetadata {
         }
     }
 }
+
+#[derive(Clone)]
 enum JsonMetadataStorage {
     DocIds {
         doc_ids: Vec<DocId>,
@@ -378,6 +381,7 @@ enum JsonMetadataStorage {
     },
 }
 
+#[derive(Clone)]
 struct JsonIndexedMetadata {
     storage: JsonMetadataStorage,
     indexes: JsonIndexBlocks,

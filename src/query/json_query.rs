@@ -143,14 +143,24 @@ impl JsonConstraintScorer {
     fn satisfies_constraint(&mut self) -> bool {
         self.common_indexes.clear();
         let mut initialized = false;
+        let mut saw_pathless = false;
         for ord in 0..self.num_terms {
             let scorer = self.intersection.docset_mut_specialized(ord);
             let paths_opt = scorer.json_array_paths_dyn();
             let paths = match paths_opt {
-                None => return true,
-                Some(paths) if paths.is_empty() => return true,
+                None => {
+                    saw_pathless = true;
+                    continue;
+                }
+                Some(paths) if paths.is_empty() => {
+                    saw_pathless = true;
+                    continue;
+                }
                 Some(paths) => paths,
             };
+            if saw_pathless {
+                return false;
+            }
             if !initialized {
                 populate_common_indexes(&mut self.common_indexes, paths);
                 initialized = true;
@@ -161,7 +171,12 @@ impl JsonConstraintScorer {
                 return false;
             }
         }
-        initialized && !self.common_indexes.is_empty()
+        if initialized {
+            !self.common_indexes.is_empty()
+        } else {
+            // All terms had no array metadata (pure object paths).
+            true
+        }
     }
 }
 
@@ -343,6 +358,43 @@ mod tests {
         let top_docs = searcher.search(&query, &TopDocs::with_limit(10))?;
         assert_eq!(top_docs.len(), 1);
         assert_eq!(top_docs[0].1.doc_id, 0u32);
+        Ok(())
+    }
+
+    #[test]
+    fn test_json_query_array_and_object_do_not_mix() -> crate::Result<()> {
+        let mut schema_builder = Schema::builder();
+        let doc_body_field = schema_builder.add_json_field("doc_body", TEXT);
+        let schema = schema_builder.build();
+        let index = Index::create_in_ram(schema);
+        {
+            let mut writer = index.writer_for_tests()?;
+            // `tags` produces array metadata; `status` lives on the object path (no array metadata).
+            writer.add_document(doc!(
+                doc_body_field => json!({"tags":["foo"], "status":"bar"})
+            ))?;
+            writer.commit()?;
+        }
+        let reader = index.reader()?;
+        let searcher = reader.searcher();
+
+        let mut tags_term = Term::from_field_json_path(doc_body_field, "tags", false);
+        tags_term.append_type_and_str("foo");
+        let mut status_term = Term::from_field_json_path(doc_body_field, "status", false);
+        status_term.append_type_and_str("bar");
+
+        let query = JsonQuery::new(vec![
+            Box::new(TermQuery::new(
+                tags_term,
+                IndexRecordOption::WithFreqsAndPositions,
+            )),
+            Box::new(TermQuery::new(
+                status_term,
+                IndexRecordOption::WithFreqsAndPositions,
+            )),
+        ]);
+        let top_docs = searcher.search(&query, &TopDocs::with_limit(10))?;
+        assert!(top_docs.is_empty(), "array/object mix should not match");
         Ok(())
     }
 }

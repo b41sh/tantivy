@@ -343,12 +343,7 @@ impl JsonTermMetadataBuilder {
             self.has_non_empty_entry = false;
             return None;
         }
-        let mut bytes = Vec::new();
-        // version marker to differentiate encoding.
-        write_u32_vint(1, &mut bytes).expect("writing to Vec cannot fail");
-
         let num_docs = self.doc_entries.len();
-        write_u32_vint(num_docs as u32, &mut bytes).expect("writing to Vec cannot fail");
 
         let counts: Vec<u32> = self.doc_entries.iter().map(|indexes| indexes.len() as u32).collect();
         if counts.iter().all(|count| *count == 0) {
@@ -356,6 +351,13 @@ impl JsonTermMetadataBuilder {
             self.has_non_empty_entry = false;
             return None;
         }
+
+        let mut bytes = Vec::new();
+        // version marker to differentiate encoding.
+        write_u32_vint(1, &mut bytes).expect("writing to Vec cannot fail");
+
+        write_u32_vint(num_docs as u32, &mut bytes).expect("writing to Vec cannot fail");
+
         Self::encode_bitpacked(&counts, &mut bytes, &mut self.block_encoder);
 
         let total_indexes: u32 = counts.iter().copied().sum();
@@ -380,7 +382,7 @@ impl JsonTermMetadataBuilder {
         let num_blocks = values.len() / COMPRESSION_BLOCK_SIZE;
         write_u32_vint(num_blocks as u32, bytes).expect("writing to Vec cannot fail");
         let mut bit_widths = Vec::with_capacity(num_blocks);
-        let mut block_bytes = Vec::new();
+        let mut block_bytes = Vec::with_capacity(num_blocks * COMPRESSION_BLOCK_SIZE);
         for block in values.chunks_exact(COMPRESSION_BLOCK_SIZE) {
             let (bit_width, encoded) = block_encoder.compress_block_unsorted(block, false);
             bit_widths.push(bit_width);

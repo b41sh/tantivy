@@ -89,6 +89,7 @@ impl TermScorer {
     }
 
     pub fn json_array_paths(&mut self) -> Option<&[Arc<[JsonArrayPathEntry]>]> {
+        println!("read json paths term={:?} path={:?}", String::from_utf8_lossy(self.term.serialized_term()), self.postings.json_array_paths());
         self.postings.json_array_paths()
     }
 

@@ -41,6 +41,8 @@ impl PositionReader {
         mut positions_data: OwnedBytes,
         json_path_table: Option<Arc<Vec<Arc<[JsonArrayPathEntry]>>>>,
     ) -> io::Result<PositionReader> {
+        println!("\n---json_path_table={:?}", json_path_table);
+
         let num_positions_bitpacked_blocks = VInt::deserialize(&mut positions_data)?.0 as usize;
         let (bit_widths, positions) = positions_data.split(num_positions_bitpacked_blocks);
         let mut positions = positions;
@@ -62,6 +64,7 @@ impl PositionReader {
                 }
             }
         }
+
         Ok(PositionReader {
             bit_widths: bit_widths.clone(),
             positions: positions.clone(),
@@ -225,15 +228,7 @@ fn parse_json_metadata(
             "Unsupported JSON metadata version",
         ));
     }
-    parse_indexed_metadata_v1(metadata_bytes, cursor, consumed, global_paths)
-}
 
-fn parse_indexed_metadata_v1(
-    metadata_bytes: OwnedBytes,
-    mut cursor: &[u8],
-    mut consumed: usize,
-    global_paths: Arc<Vec<Arc<[JsonArrayPathEntry]>>>,
-) -> io::Result<JsonMetadata> {
     let num_docs = read_vint_and_update(&mut cursor, &mut consumed) as usize;
     if num_docs == 0 {
         return Ok(JsonMetadata::None);
@@ -247,7 +242,8 @@ fn parse_indexed_metadata_v1(
         return Ok(JsonMetadata::None);
     }
     let indexes =
-        JsonIndexBlocks::parse(metadata_bytes, &mut cursor, &mut consumed, total_indexes)?;
+        //JsonIndexBlocks::parse(metadata_bytes, &mut cursor, &mut consumed, total_indexes)?;
+        JsonIndexBlocks::parse(&mut cursor, &mut consumed, total_indexes)?;
     let mut prefix_sums = Vec::with_capacity(counts.len());
     let mut sum = 0u32;
     for count in &counts {
@@ -381,7 +377,7 @@ struct JsonIndexBlocks {
 
 impl JsonIndexBlocks {
     fn parse(
-        metadata_bytes: OwnedBytes,
+        //metadata_bytes: OwnedBytes,
         cursor: &mut &[u8],
         consumed: &mut usize,
         total_indexes: usize,
@@ -397,7 +393,9 @@ impl JsonIndexBlocks {
             block_offsets.push(total_block_bytes);
             total_block_bytes += (bit_width as usize * COMPRESSION_BLOCK_SIZE) / 8;
         }
-        let block_data = metadata_bytes.slice(*consumed..*consumed + total_block_bytes);
+        //let block_data = metadata_bytes.slice(*consumed..*consumed + total_block_bytes);
+        //let block_data = &cursor[..total_block_bytes];
+        let block_data = OwnedBytes::new(cursor[..total_block_bytes].to_vec());
         *cursor = &cursor[total_block_bytes..];
         *consumed += total_block_bytes;
         let remainder = total_indexes % COMPRESSION_BLOCK_SIZE;

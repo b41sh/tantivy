@@ -595,14 +595,14 @@ impl<TPostings: Postings> PhraseScorer<TPostings> {
         let mut matched_iter = matched_positions.iter().peekable();
         for (pos, path) in self.positions_buffer.iter().zip(paths.iter()) {
             while let Some(&m) = matched_iter.peek() {
-                if m < *pos {
+                if m < pos {
                     matched_iter.next();
                 } else {
                     break;
                 }
             }
             if let Some(&m) = matched_iter.peek() {
-                if m == *pos {
+                if m == pos {
                     filtered.push(path.clone());
                 }
             }

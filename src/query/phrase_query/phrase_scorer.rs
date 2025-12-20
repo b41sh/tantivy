@@ -554,8 +554,60 @@ impl<TPostings: Postings> PhraseScorer<TPostings> {
                 self.json_metadata_doc = Some(current_doc);
             }
         }
+        if has_metadata.is_some() {
+            self.filter_phrase_json_paths(&mut json_metadata);
+            if json_metadata.is_empty() {
+                has_metadata = None;
+            }
+        }
         self.json_metadata = Some(json_metadata);
         has_metadata.and_then(|_| self.json_metadata.as_deref())
+    }
+
+    /// Keep only the JSON paths that actually participate in a phrase match.
+    /// This is currently restricted to slop == 0, where matches are exact
+    /// position overlaps between the first and last term (after offsets).
+    fn filter_phrase_json_paths(&mut self, paths: &mut Vec<Arc<[JsonArrayPathEntry]>>) {
+        if paths.is_empty() || self.num_terms < 2 || self.slop != 0 {
+            return;
+        }
+
+        // Compute the set of matched positions for the first term.
+        let mut matched_positions = self.left_positions.clone();
+        intersection(&mut matched_positions, &self.right_positions);
+        if matched_positions.is_empty() {
+            paths.clear();
+            return;
+        }
+
+        // Re-read the first term positions to align them with the per-position metadata.
+        self.positions_buffer.clear();
+        self.intersection_docset
+            .docset_mut_specialized(0)
+            .positions(&mut self.positions_buffer);
+
+        // If metadata is not per-position, bail out to avoid false negatives.
+        if self.positions_buffer.len() != paths.len() {
+            return;
+        }
+
+        let mut filtered = Vec::with_capacity(paths.len());
+        let mut matched_iter = matched_positions.iter().peekable();
+        for (pos, path) in self.positions_buffer.iter().zip(paths.iter()) {
+            while let Some(&m) = matched_iter.peek() {
+                if m < *pos {
+                    matched_iter.next();
+                } else {
+                    break;
+                }
+            }
+            if let Some(&m) = matched_iter.peek() {
+                if m == *pos {
+                    filtered.push(path.clone());
+                }
+            }
+        }
+        *paths = filtered;
     }
 }
 

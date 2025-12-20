@@ -333,6 +333,52 @@ mod tests {
     }
 
     #[test]
+    fn test_phrase_json_paths_filtered_by_positions() -> crate::Result<()> {
+        let mut schema_builder = Schema::builder();
+        let doc_body_field = schema_builder.add_json_field("doc_body", TEXT);
+        let schema = schema_builder.build();
+        let index = Index::create_in_ram(schema);
+        {
+            let mut writer = index.writer_for_tests()?;
+            // element 0: phrase and type match on same path
+            writer.add_document(doc!(
+                doc_body_field => json!({"videoInfo":{"extraData":[{"name":"codec foo","type":"mp4"}]}})
+            ))?;
+            // element 0 has phrase but not mp4, element 1 has mp4 but not phrase
+            writer.add_document(doc!(
+                doc_body_field => json!({"videoInfo":{"extraData":[{"name":"codec foo","type":"jpg"},{"name":"codec bar","type":"mp4"}]}})
+            ))?;
+            writer.commit()?;
+        }
+        let reader = index.reader()?;
+        let searcher = reader.searcher();
+
+        let mut codec_term =
+            Term::from_field_json_path(doc_body_field, "videoInfo.extraData.name", false);
+        codec_term.append_type_and_str("codec");
+        let mut foo_term =
+            Term::from_field_json_path(doc_body_field, "videoInfo.extraData.name", false);
+        foo_term.append_type_and_str("foo");
+        let mut type_term =
+            Term::from_field_json_path(doc_body_field, "videoInfo.extraData.type", false);
+        type_term.append_type_and_str("mp4");
+
+        let phrase_query: Box<dyn Query> =
+            Box::new(PhraseQuery::new(vec![codec_term, foo_term]));
+        let query = JsonQuery::new(vec![
+            phrase_query,
+            Box::new(TermQuery::new(
+                type_term,
+                IndexRecordOption::WithFreqsAndPositions,
+            )),
+        ]);
+        let top_docs = searcher.search(&query, &TopDocs::with_limit(10))?;
+        assert_eq!(top_docs.len(), 1);
+        assert_eq!(top_docs[0].1.doc_id, 0u32);
+        Ok(())
+    }
+
+    #[test]
     fn test_query_parser_builds_json_query() -> crate::Result<()> {
         let mut schema_builder = Schema::builder();
         let doc_body_field = schema_builder.add_json_field("doc_body", TEXT);
@@ -360,4 +406,3 @@ mod tests {
         Ok(())
     }
 }
-

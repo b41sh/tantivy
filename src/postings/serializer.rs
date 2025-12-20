@@ -3,7 +3,7 @@ use std::io::{self, Write};
 
 use common::json_path_writer::JsonArrayPathEntry;
 use common::{write_u32_vint, BinarySerializable, CountingWriter, VInt};
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 
 use super::TermInfo;
 use crate::directory::{CompositeWrite, WritePtr};
@@ -320,16 +320,13 @@ struct JsonTermMetadataBuilder {
 
 impl JsonTermMetadataBuilder {
     fn add_doc(&mut self, metadata: &[Vec<JsonArrayPathEntry>], path_table: &mut JsonPathTableBuilder) {
-        let mut indexes = Vec::new();
-        let mut seen = FxHashSet::default();
+        let mut indexes = Vec::with_capacity(metadata.len());
         for json_array_path in metadata {
             let index = path_table.get_or_insert_id(json_array_path);
             if index == 0 {
                 continue;
             }
-            if seen.insert(index) {
-                indexes.push(index);
-            }
+            indexes.push(index);
         }
         if !indexes.is_empty() {
             self.has_non_empty_entry = true;

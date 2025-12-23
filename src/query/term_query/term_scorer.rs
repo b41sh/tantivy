@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use common::json_path_writer::{JsonArrayPathEntry, JSON_PATH_SEGMENT_SEP};
+use common::json_path_writer::JsonArrayPathEntry;
 
 use crate::docset::DocSet;
 use crate::fieldnorm::FieldNormReader;
@@ -141,7 +141,6 @@ impl JsonPathScorer for TermScorer {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct JsonConstraintKey {
     field: Field,
-    parent_path: Vec<u8>,
 }
 
 impl JsonConstraintKey {
@@ -149,22 +148,9 @@ impl JsonConstraintKey {
         if term.typ() != Type::Json {
             return None;
         }
-        let binding = term.value();
-        let (path_bytes, _) = binding.as_json()?;
-        if path_bytes.is_empty() {
-            return None;
-        }
-        let path = &path_bytes[..path_bytes.len() - 1];
-        let parent_path = if let Some(pos) = path.iter().rposition(|b| *b == JSON_PATH_SEGMENT_SEP)
-        {
-            path[..pos].to_vec()
-        } else {
-            Vec::new()
-        };
-        Some(JsonConstraintKey {
-            field: term.field(),
-            parent_path,
-        })
+        // Only the field matters for grouping; path-level filtering is enforced later by
+        // intersecting actual array paths at query time.
+        Some(JsonConstraintKey { field: term.field() })
     }
 }
 

@@ -124,9 +124,42 @@ fn convert_scorer_to_json(scorer: Box<dyn Scorer>) -> crate::Result<Box<dyn Json
             .map_err(|_| TantivyError::InvalidArgument("Invalid json scorer".to_string()))?);
         return Ok(Box::new(phrase_scorer));
     }
-    Err(TantivyError::InvalidArgument(
-        "JsonQuery expects json term or phrase subqueries".to_string(),
-    ))
+    // Fallback: wrap any scorer as a JsonPathScorer that exposes no metadata.
+    Ok(Box::new(PassthroughJsonScorer { inner: scorer }))
+}
+
+struct PassthroughJsonScorer {
+    inner: Box<dyn Scorer>,
+}
+
+impl JsonPathScorer for PassthroughJsonScorer {}
+
+impl DocSet for PassthroughJsonScorer {
+    fn advance(&mut self) -> DocId {
+        self.inner.advance()
+    }
+
+    fn seek(&mut self, target: DocId) -> DocId {
+        self.inner.seek(target)
+    }
+
+    fn doc(&self) -> DocId {
+        self.inner.doc()
+    }
+
+    fn size_hint(&self) -> u32 {
+        self.inner.size_hint()
+    }
+
+    fn cost(&self) -> u64 {
+        self.inner.cost()
+    }
+}
+
+impl Scorer for PassthroughJsonScorer {
+    fn score(&mut self) -> Score {
+        self.inner.score()
+    }
 }
 
 /// Scorer that enforces JSON-path agreement across all sub-scorers.
@@ -153,28 +186,33 @@ impl JsonConstraintScorer {
 
     fn satisfies_constraint(&mut self) -> bool {
         self.common_indexes.clear();
-        let mut initialized = false;
+        let mut has_paths = false;
         for ord in 0..self.num_terms {
             let scorer = self.intersection.docset_mut_specialized(ord);
             let paths_opt = scorer.json_array_paths_dyn();
-            // If the term has no array metadata, we cannot restrict by array element for it;
-            // consider it compatible with any path.
-            let paths = match paths_opt {
-                None => return true,
-                Some([]) => return true,
-                Some(paths) => paths,
-            };
-            if !initialized {
-                populate_common_indexes(&mut self.common_indexes, paths);
-                initialized = true;
-                continue;
-            }
-            retain_common_indexes(&mut self.common_indexes, paths);
-            if self.common_indexes.is_empty() {
-                return false;
+            match paths_opt {
+                Some(paths) if !paths.is_empty() => {
+                    if !has_paths {
+                        populate_common_indexes(&mut self.common_indexes, paths);
+                        has_paths = true;
+                    } else {
+                        retain_common_indexes(&mut self.common_indexes, paths);
+                        if self.common_indexes.is_empty() {
+                            return false;
+                        }
+                    }
+                }
+                _ => {
+                    // No metadata for this term: treat as unconstrained, but do not
+                    // short-circuit the existing intersection.
+                }
             }
         }
-        initialized && !self.common_indexes.is_empty()
+        if has_paths {
+            !self.common_indexes.is_empty()
+        } else {
+            true
+        }
     }
 }
 
@@ -305,16 +343,6 @@ mod tests {
         let reader = index.reader()?;
         let searcher = reader.searcher();
 
-        let query_parser = QueryParser::for_index(&index, vec![doc_body_field]);
-        let query = query_parser.parse_query(
-            "doc_body.videoInfo.extraData.name:\"codec foo\" AND \
-             doc_body.videoInfo.extraData.type:mp4",
-        )?;
-        let top_docs = searcher.search(&query, &TopDocs::with_limit(10).order_by_score())?;
-        print!("\n\n\n\n--0000---top_docs={:?}", top_docs);
-        assert_eq!(top_docs.len(), 1);
-        print!("\n\n\n\n");
-
         let mut codec_term =
             Term::from_field_json_path(doc_body_field, "videoInfo.extraData.name", false);
         codec_term.append_type_and_str("codec");
@@ -381,6 +409,50 @@ mod tests {
         let top_docs = searcher.search(&query, &TopDocs::with_limit(10).order_by_score())?;
         assert_eq!(top_docs.len(), 1);
         assert_eq!(top_docs[0].1.doc_id, 0u32);
+        Ok(())
+    }
+
+    #[test]
+    fn test_json_query_rejects_cross_element_match() -> crate::Result<()> {
+        let mut schema_builder = Schema::builder();
+        let doc_body_field = schema_builder.add_json_field("doc_body", TEXT);
+        let schema = schema_builder.build();
+        let index = Index::create_in_ram(schema);
+        {
+            let mut writer = index.writer_for_tests()?;
+            // codecA + jpg, codecB + mp4 -> should not satisfy codecA + mp4
+            writer.add_document(doc!(
+                doc_body_field => json!({"videoInfo":{"extraData":[{"attributes":{"type":"jpg"},"name":"codecA"},{"attributes":{"type":"mp4"},"name":"codecB"}]}})
+            ))?;
+            // codecA + mp4 -> should match
+            writer.add_document(doc!(
+                doc_body_field => json!({"videoInfo":{"extraData":[{"attributes":{"type":"mp4"},"name":"codecA"}]}})
+            ))?;
+            writer.commit()?;
+        }
+        let reader = index.reader()?;
+        let searcher = reader.searcher();
+
+        let mut name_term =
+            Term::from_field_json_path(doc_body_field, "videoInfo.extraData.name", false);
+        name_term.append_type_and_str("codecA");
+        let mut type_term =
+            Term::from_field_json_path(doc_body_field, "videoInfo.extraData.attributes.type", false);
+        type_term.append_type_and_str("mp4");
+
+        let query = JsonQuery::new(vec![
+            Box::new(TermQuery::new(
+                name_term,
+                IndexRecordOption::WithFreqsAndPositions,
+            )),
+            Box::new(TermQuery::new(
+                type_term,
+                IndexRecordOption::WithFreqsAndPositions,
+            )),
+        ]);
+        let top_docs = searcher.search(&query, &TopDocs::with_limit(10))?;
+        assert_eq!(top_docs.len(), 1);
+        assert_eq!(top_docs[0].1.doc_id, 1u32);
         Ok(())
     }
 

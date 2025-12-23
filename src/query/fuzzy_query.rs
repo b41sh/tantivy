@@ -67,7 +67,7 @@ impl Automaton for DfaWrapper {
 ///     {
 ///         let term = Term::from_field_text(title, "Diary");
 ///         let query = FuzzyTermQuery::new(term, 1, true);
-///         let (top_docs, count) = searcher.search(&query, &(TopDocs::with_limit(2), Count)).unwrap();
+///         let (top_docs, count) = searcher.search(&query, &(TopDocs::with_limit(2).order_by_score(), Count)).unwrap();
 ///         assert_eq!(count, 2);
 ///         assert_eq!(top_docs.len(), 2);
 ///     }
@@ -250,7 +250,8 @@ mod test {
         {
             let term = get_json_path_term("attributes.aa:japan")?;
             let fuzzy_query = FuzzyTermQuery::new(term, 2, true);
-            let top_docs = searcher.search(&fuzzy_query, &TopDocs::with_limit(2))?;
+            let top_docs =
+                searcher.search(&fuzzy_query, &TopDocs::with_limit(2).order_by_score())?;
             assert_eq!(top_docs.len(), 1, "Expected only 1 document");
             assert_eq!(top_docs[0].1.doc_id, 1, "Expected the second document");
         }
@@ -261,7 +262,8 @@ mod test {
             let term = get_json_path_term("attributes.a:japon")?;
 
             let fuzzy_query = FuzzyTermQuery::new(term, 1, true);
-            let top_docs = searcher.search(&fuzzy_query, &TopDocs::with_limit(2))?;
+            let top_docs =
+                searcher.search(&fuzzy_query, &TopDocs::with_limit(2).order_by_score())?;
             assert_eq!(top_docs.len(), 1, "Expected only 1 document");
             assert_eq!(top_docs[0].1.doc_id, 0, "Expected the first document");
         }
@@ -271,7 +273,8 @@ mod test {
             let term = get_json_path_term("attributes.a:jap")?;
 
             let fuzzy_query = FuzzyTermQuery::new(term, 1, true);
-            let top_docs = searcher.search(&fuzzy_query, &TopDocs::with_limit(2))?;
+            let top_docs =
+                searcher.search(&fuzzy_query, &TopDocs::with_limit(2).order_by_score())?;
             assert_eq!(top_docs.len(), 0, "Expected no document");
         }
 
@@ -301,7 +304,8 @@ mod test {
         {
             let term = Term::from_field_text(country_field, "japon");
             let fuzzy_query = FuzzyTermQuery::new(term, 1, true);
-            let top_docs = searcher.search(&fuzzy_query, &TopDocs::with_limit(2))?;
+            let top_docs =
+                searcher.search(&fuzzy_query, &TopDocs::with_limit(2).order_by_score())?;
             assert_eq!(top_docs.len(), 1, "Expected only 1 document");
             let (score, _) = top_docs[0];
             assert_nearly_equals!(1.0, score);
@@ -312,7 +316,8 @@ mod test {
             let term = Term::from_field_text(country_field, "jap");
 
             let fuzzy_query = FuzzyTermQuery::new(term, 1, true);
-            let top_docs = searcher.search(&fuzzy_query, &TopDocs::with_limit(2))?;
+            let top_docs =
+                searcher.search(&fuzzy_query, &TopDocs::with_limit(2).order_by_score())?;
             assert_eq!(top_docs.len(), 0, "Expected no document");
         }
 
@@ -320,7 +325,8 @@ mod test {
         {
             let term = Term::from_field_text(country_field, "jap");
             let fuzzy_query = FuzzyTermQuery::new_prefix(term, 1, true);
-            let top_docs = searcher.search(&fuzzy_query, &TopDocs::with_limit(2))?;
+            let top_docs =
+                searcher.search(&fuzzy_query, &TopDocs::with_limit(2).order_by_score())?;
             assert_eq!(top_docs.len(), 1, "Expected only 1 document");
             let (score, _) = top_docs[0];
             assert_nearly_equals!(1.0, score);

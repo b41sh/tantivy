@@ -6,8 +6,8 @@ use std::net::Ipv6Addr;
 use std::ops::{Bound, RangeInclusive};
 
 use columnar::{
-    Column, ColumnType, MonotonicallyMappableToU128, MonotonicallyMappableToU64, NumericalType,
-    StrColumn,
+    Cardinality, Column, ColumnType, MonotonicallyMappableToU128, MonotonicallyMappableToU64,
+    NumericalType, StrColumn,
 };
 use common::bounds::{BoundsRange, TransformBound};
 
@@ -397,6 +397,8 @@ fn search_on_u64_ff(
     boost: Score,
     bounds: BoundsRange<u64>,
 ) -> crate::Result<Box<dyn Scorer>> {
+    let col_min_value = column.min_value();
+    let col_max_value = column.max_value();
     #[expect(clippy::reversed_empty_ranges)]
     let value_range = bound_to_value_range(
         &bounds.lower_bound,
@@ -408,6 +410,22 @@ fn search_on_u64_ff(
     if value_range.is_empty() {
         return Ok(Box::new(EmptyScorer));
     }
+    if col_min_value >= *value_range.start() && col_max_value <= *value_range.end() {
+        // all values in the column are within the range.
+        if column.index.get_cardinality() == Cardinality::Full {
+            if boost != 1.0f32 {
+                return Ok(Box::new(ConstScorer::new(
+                    AllScorer::new(column.num_docs()),
+                    boost,
+                )));
+            } else {
+                return Ok(Box::new(AllScorer::new(column.num_docs())));
+            }
+        } else {
+            // TODO Make it a field presence request for that specific column
+        }
+    }
+
     let docset = RangeDocSet::new(value_range, column);
     Ok(Box::new(ConstScorer::new(docset, boost)))
 }
@@ -509,7 +527,9 @@ mod tests {
 
         let test_query = |query, num_hits| {
             let query = query_parser.parse_query(query).unwrap();
-            let top_docs = searcher.search(&query, &TopDocs::with_limit(10)).unwrap();
+            let top_docs = searcher
+                .search(&query, &TopDocs::with_limit(10).order_by_score())
+                .unwrap();
             assert_eq!(top_docs.len(), num_hits);
         };
 
@@ -595,7 +615,9 @@ mod tests {
         let query_parser = QueryParser::for_index(&index, vec![date_field]);
         let test_query = |query, num_hits| {
             let query = query_parser.parse_query(query).unwrap();
-            let top_docs = searcher.search(&query, &TopDocs::with_limit(10)).unwrap();
+            let top_docs = searcher
+                .search(&query, &TopDocs::with_limit(10).order_by_score())
+                .unwrap();
             assert_eq!(top_docs.len(), num_hits);
         };
 
@@ -975,7 +997,9 @@ mod tests {
         let query_parser = QueryParser::for_index(&index, vec![json_field]);
         let test_query = |query, num_hits| {
             let query = query_parser.parse_query(query).unwrap();
-            let top_docs = searcher.search(&query, &TopDocs::with_limit(10)).unwrap();
+            let top_docs = searcher
+                .search(&query, &TopDocs::with_limit(10).order_by_score())
+                .unwrap();
             assert_eq!(top_docs.len(), num_hits);
         };
 

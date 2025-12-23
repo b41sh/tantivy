@@ -272,7 +272,22 @@ fn retain_common_indexes(
     common: &mut Vec<Arc<[JsonArrayPathEntry]>>,
     paths: &[Arc<[JsonArrayPathEntry]>],
 ) {
-    common.retain(|candidate| paths.iter().any(|path| path.as_ref() == candidate.as_ref()));
+    common.retain(|candidate| {
+        paths
+            .iter()
+            .any(|path| paths_share_prefix(path.as_ref(), candidate.as_ref()))
+    });
+}
+
+fn paths_share_prefix(left: &[JsonArrayPathEntry], right: &[JsonArrayPathEntry]) -> bool {
+    let shared_len = left.len().min(right.len());
+    if shared_len == 0 {
+        return false;
+    }
+    left.iter()
+        .zip(right.iter())
+        .take(shared_len)
+        .all(|(l, r)| l.path_id == r.path_id && l.element_ord == r.element_ord)
 }
 
 #[cfg(test)]

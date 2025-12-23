@@ -24,11 +24,23 @@ use crate::DocId;
 pub struct PositionReader {
     bit_widths: OwnedBytes,
     positions: OwnedBytes,
+
     block_decoder: BlockDecoder,
+
+    // offset, expressed in positions, for the first position of the block currently loaded
+    // block_offset is a multiple of COMPRESSION_BLOCK_SIZE.
     block_offset: u64,
+    // offset, expressed in positions, for the position of the first block encoded
+    // in the `self.positions` bytes, and if bitpacked, compressed using the bitwidth in
+    // `self.bit_widths`.
+    //
+    // As we advance, anchor increases simultaneously with bit_widths and positions get consumed.
     anchor_offset: u64,
+
+    // These are just copies used for .reset().
     original_bit_widths: OwnedBytes,
     original_positions: OwnedBytes,
+    // The metadata of JsonPath.
     json_metadata: JsonMetadata,
 }
 
@@ -38,8 +50,6 @@ impl PositionReader {
         mut positions_data: OwnedBytes,
         json_path_table: Option<Arc<Vec<Arc<[JsonArrayPathEntry]>>>>,
     ) -> io::Result<PositionReader> {
-        println!("\n---json_path_table={:?}", json_path_table);
-
         let num_positions_bitpacked_blocks = VInt::deserialize(&mut positions_data)?.0 as usize;
         let (bit_widths, positions) = positions_data.split(num_positions_bitpacked_blocks);
         let mut positions = positions;
@@ -232,9 +242,7 @@ fn parse_json_metadata(
     if total_indexes == 0 {
         return Ok(JsonMetadata::None);
     }
-    let indexes =
-        //JsonIndexBlocks::parse(metadata_bytes, &mut cursor, &mut consumed, total_indexes)?;
-        JsonIndexBlocks::parse(&mut cursor, &mut consumed, total_indexes)?;
+    let indexes = JsonIndexBlocks::parse(&mut cursor, &mut consumed, total_indexes)?;
     let mut prefix_sums = Vec::with_capacity(counts.len());
     let mut sum = 0u32;
     for count in &counts {
@@ -373,7 +381,6 @@ struct JsonIndexBlocks {
 
 impl JsonIndexBlocks {
     fn parse(
-        // metadata_bytes: OwnedBytes,
         cursor: &mut &[u8],
         consumed: &mut usize,
         total_indexes: usize,
@@ -389,8 +396,6 @@ impl JsonIndexBlocks {
             block_offsets.push(total_block_bytes);
             total_block_bytes += (bit_width as usize * COMPRESSION_BLOCK_SIZE) / 8;
         }
-        // let block_data = metadata_bytes.slice(*consumed..*consumed + total_block_bytes);
-        // let block_data = &cursor[..total_block_bytes];
         let block_data = OwnedBytes::new(cursor[..total_block_bytes].to_vec());
         *cursor = &cursor[total_block_bytes..];
         *consumed += total_block_bytes;

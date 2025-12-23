@@ -17,6 +17,18 @@ use crate::postings::{BlockSegmentPostings, SegmentPostings, TermInfo};
 use crate::schema::{IndexRecordOption, Term, Type};
 use crate::termdict::TermDictionary;
 
+/// The inverted index reader is in charge of accessing
+/// the inverted index associated with a specific field.
+///
+/// # Note
+///
+/// It is safe to delete the segment associated with
+/// an `InvertedIndexReader`. As long as it is open,
+/// the [`FileSlice`] it is relying on should
+/// stay available.
+///
+/// `InvertedIndexReader` are created by calling
+/// [`SegmentReader::inverted_index()`](crate::SegmentReader::inverted_index).
 pub struct InvertedIndexReader {
     termdict: TermDictionary,
     postings_file_slice: FileSlice,

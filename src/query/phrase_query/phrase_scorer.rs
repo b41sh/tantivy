@@ -63,7 +63,6 @@ pub struct PhraseScorer<TPostings: Postings> {
     left_slops: Vec<u8>,
     positions_buffer: Vec<u32>,
     slops_buffer: Vec<u8>,
-    json_constraint_key: Option<JsonConstraintKey>,
     json_metadata: Option<Vec<Arc<[JsonArrayPathEntry]>>>,
     json_metadata_doc: Option<DocId>,
 }
@@ -408,7 +407,6 @@ impl<TPostings: Postings> PhraseScorer<TPostings> {
             left_slops: Vec::with_capacity(100),
             slops_buffer: Vec::with_capacity(100),
             positions_buffer: Vec::with_capacity(100),
-            json_constraint_key: json_constraint_key.clone(),
             json_metadata: json_constraint_key.map(|_| Vec::new()),
             json_metadata_doc: None,
         };

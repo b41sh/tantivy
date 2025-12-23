@@ -291,7 +291,7 @@ fn decode_bitpacked_values(
     for (block_idx, &bit_width) in bit_widths.iter().enumerate() {
         let offset = block_offsets[block_idx];
         if bit_width == 0 {
-            values.extend(std::iter::repeat(0u32).take(COMPRESSION_BLOCK_SIZE));
+            values.extend(std::iter::repeat_n(0u32, COMPRESSION_BLOCK_SIZE));
         } else {
             decoder.uncompress_block_unsorted(
                 &data_slice[offset..offset + (bit_width as usize * COMPRESSION_BLOCK_SIZE / 8)],

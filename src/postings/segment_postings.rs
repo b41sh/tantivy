@@ -160,7 +160,7 @@ impl SegmentPostings {
         SegmentPostings {
             block_cursor: segment_block_postings,
             cur: 0, // cursor within the block
-            json_metadata: has_json_metadata.then(|| Vec::new()),
+            json_metadata: has_json_metadata.then(Vec::new),
             json_metadata_doc: None,
             position_reader,
         }

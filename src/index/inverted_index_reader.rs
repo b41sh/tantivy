@@ -290,6 +290,7 @@ impl InvertedIndexReader {
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn split_json_path_table(
     positions_file_slice: FileSlice,
 ) -> io::Result<(FileSlice, Option<Arc<Vec<Arc<[JsonArrayPathEntry]>>>>)> {

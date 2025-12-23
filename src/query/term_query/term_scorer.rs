@@ -166,14 +166,6 @@ impl JsonConstraintKey {
             parent_path,
         })
     }
-
-    pub fn field(&self) -> Field {
-        self.field
-    }
-
-    pub fn parent_path(&self) -> &[u8] {
-        &self.parent_path
-    }
 }
 
 #[cfg(test)]

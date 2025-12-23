@@ -640,3 +640,112 @@ impl<W: Write> PostingsSerializer<W> {
         self.last_doc_id_encoded = 0;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+    use std::sync::Arc;
+
+    use common::{read_u32_vint, write_u32_vint};
+    use directory::RamDirectory;
+    use schema::{IndexRecordOption, JsonObjectOptions, TextFieldIndexing};
+
+    use super::{FieldSerializer, JsonArrayPathEntry};
+    use crate::positions::reader::PositionReader;
+    use crate::schema::FieldType;
+    use crate::termdict::TermDictionary;
+
+    #[test]
+    fn test_field_serializer_writes_json_metadata() -> crate::Result<()> {
+        // Build writers backed by an in-memory directory.
+        let directory = RamDirectory::create();
+        let mut term_dict_write = CountingWriter::wrap(directory.open_write(Path::new("terms"))?);
+        let mut postings_write =
+            CountingWriter::wrap(directory.open_write(Path::new("postings"))?);
+        let mut positions_write =
+            CountingWriter::wrap(directory.open_write(Path::new("positions"))?);
+
+        let json_options = JsonObjectOptions::default().set_indexing_options(
+            TextFieldIndexing::default().set_index_option(IndexRecordOption::WithFreqsAndPositions),
+        );
+        let field_type = FieldType::JsonObject(json_options);
+        let mut field_serializer = FieldSerializer::create(
+            &field_type,
+            1,
+            &mut term_dict_write,
+            &mut postings_write,
+            &mut positions_write,
+            None,
+        )?;
+
+        field_serializer.new_term(b"foo", 1, true)?;
+        let path_entry = JsonArrayPathEntry {
+            path_id: 1,
+            element_ord: 0,
+        };
+        field_serializer.write_doc_with_json_metadata(0u32, 1, &[0], &[vec![path_entry]]);
+        field_serializer.close_term()?;
+        field_serializer.close()?;
+
+        // Read back term info to locate the positions slice.
+        let term_dict = TermDictionary::open(directory.open_read(Path::new("terms"))?)?;
+        let term_info = term_dict
+            .get(b"foo")?
+            .expect("term info must exist for foo");
+
+        let positions_file = directory.open_read(Path::new("positions"))?;
+        let positions_bytes = positions_file.read_bytes()?;
+        // positions_range covers the term body; the path table sits after it.
+        let positions_body = positions_bytes.slice(0..term_info.positions_range.end);
+
+        // Extract path table from the trailer.
+        let path_table = {
+            let trailer = positions_bytes.as_ref();
+            let marker_idx = trailer.len() - 5;
+            assert_eq!(trailer[marker_idx], crate::positions::JSON_PATH_TABLE_MARKER);
+            let table_len = u32::from_be_bytes(
+                trailer[marker_idx + 1..marker_idx + 5].try_into().unwrap(),
+            ) as usize;
+            let table_start = marker_idx - table_len;
+            let table_bytes = positions_bytes.slice(table_start..marker_idx);
+            let mut cursor = table_bytes.as_ref();
+            let path_count = read_u32_vint(&mut cursor) as usize;
+            let mut paths = Vec::with_capacity(path_count);
+            for _ in 0..path_count {
+                let depth = read_u32_vint(&mut cursor) as usize;
+                let mut entries = Vec::with_capacity(depth);
+                for _ in 0..depth {
+                    let path_id = read_u32_vint(&mut cursor);
+                    let element_ord = read_u32_vint(&mut cursor);
+                    entries.push(JsonArrayPathEntry {
+                        path_id,
+                        element_ord,
+                    });
+                }
+                paths.push(entries);
+            }
+            Arc::new(
+                paths
+                    .into_iter()
+                    .map(|p| Arc::from(p.into_boxed_slice()))
+                    .collect::<Vec<_>>(),
+            )
+        };
+
+        let mut position_reader =
+            PositionReader::open(positions_body, Some(path_table.clone())).unwrap();
+        assert!(position_reader.has_json_metadata());
+        let mut paths = Vec::new();
+        assert!(position_reader.fill_doc_json_metadata_refs(0u32, 0u32, &mut paths));
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0][0].path_id, 1);
+        assert_eq!(paths[0][0].element_ord, 0);
+
+        // Positions should read back the single delta we stored.
+        let mut pos = vec![0u32];
+        position_reader.read(0, &mut pos);
+        assert_eq!(pos, vec![0u32]);
+
+        Ok(())
+    }
+}

@@ -473,3 +473,62 @@ impl JsonIndexBlocks {
         self.decoded_block_idx = Some(block_idx);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use common::write_u32_vint;
+
+    use super::*;
+    use crate::positions::serializer::PositionSerializer;
+
+    #[test]
+    fn test_position_reader_bitpacked_zero_and_remainder_with_metadata() {
+        // Build positions with one full zero block (bit_width = 0) and a short remainder.
+        let mut buf = Vec::new();
+        {
+            let mut serializer = PositionSerializer::new(&mut buf);
+            serializer.write_positions_delta(&vec![0u32; COMPRESSION_BLOCK_SIZE]);
+            serializer.write_positions_delta(&[1u32, 2u32]);
+            serializer.close_term().unwrap();
+        }
+
+        // Manually append minimal JSON metadata for 1 doc with 1 path id (=1).
+        let mut metadata = Vec::new();
+        write_u32_vint(1, &mut metadata).unwrap(); // version
+        write_u32_vint(1, &mut metadata).unwrap(); // num_docs
+        write_u32_vint(0, &mut metadata).unwrap(); // counts num_blocks
+        write_u32_vint(1, &mut metadata).unwrap(); // counts remainder
+        write_u32_vint(1, &mut metadata).unwrap(); // total_indexes
+        write_u32_vint(0, &mut metadata).unwrap(); // indexes num_blocks
+        write_u32_vint(1, &mut metadata).unwrap(); // index value
+        buf.extend_from_slice(&metadata);
+        buf.push(JSON_METADATA_MARKER);
+        buf.extend_from_slice(&(metadata.len() as u32).to_be_bytes());
+
+        let path_table = Arc::new(vec![
+            Arc::from(Vec::<JsonArrayPathEntry>::new().into_boxed_slice()),
+            Arc::from(
+                vec![JsonArrayPathEntry {
+                    path_id: 1,
+                    element_ord: 0,
+                }]
+                .into_boxed_slice(),
+            ),
+        ]);
+
+        let mut reader = PositionReader::open(OwnedBytes::new(buf), Some(path_table)).unwrap();
+        assert!(reader.has_json_metadata());
+
+        let mut positions = vec![0u32; COMPRESSION_BLOCK_SIZE + 2];
+        reader.read(0, &mut positions);
+        let mut expected = vec![0u32; COMPRESSION_BLOCK_SIZE];
+        expected.extend_from_slice(&[1u32, 2u32]);
+        assert_eq!(positions, expected);
+
+        let mut paths = Vec::new();
+        assert!(reader.fill_doc_json_metadata_refs(0, 0, &mut paths));
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0][0].path_id, 1);
+        assert_eq!(paths[0][0].element_ord, 0);
+    }
+}

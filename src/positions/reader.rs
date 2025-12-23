@@ -531,4 +531,42 @@ mod tests {
         assert_eq!(paths[0][0].path_id, 1);
         assert_eq!(paths[0][0].element_ord, 0);
     }
+
+    #[test]
+    fn test_position_reader_multiple_blocks_no_metadata() {
+        // Build positions spanning more than one block with non-zero deltas and a remainder.
+        let mut buf = Vec::new();
+        let mut deltas: Vec<u32> = (0u32..COMPRESSION_BLOCK_SIZE as u32)
+            .map(|i| i % 64)
+            .collect();
+        deltas.extend_from_slice(&[500u32, 600u32, 700u32]);
+        {
+            let mut serializer = PositionSerializer::new(&mut buf);
+            serializer.write_positions_delta(&deltas);
+            serializer.close_term().unwrap();
+        }
+
+        let mut reader = PositionReader::open(OwnedBytes::new(buf), None).unwrap();
+        assert!(!reader.has_json_metadata());
+
+        // Read full range.
+        let mut out = vec![0u32; deltas.len()];
+        reader.read(0, &mut out);
+        assert_eq!(out, deltas);
+
+        // Read a slice starting in the same block.
+        let mut slice = vec![0u32; 5];
+        reader.read(5, &mut slice);
+        assert_eq!(slice, deltas[5..10]);
+
+        // Read from earlier offset to trigger reset path.
+        let mut restart = vec![0u32; 3];
+        reader.read(0, &mut restart);
+        assert_eq!(restart, deltas[..3]);
+
+        // No metadata should be returned.
+        let mut paths = Vec::new();
+        assert!(!reader.fill_doc_json_metadata_refs(0, 0, &mut paths));
+        assert!(paths.is_empty());
+    }
 }

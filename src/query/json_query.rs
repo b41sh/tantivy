@@ -1,3 +1,7 @@
+//! JSON query support.
+//!
+//! Combines JSON subqueries and enforces that, when array metadata is available,
+//! matches refer to the same JSON array element.
 use std::fmt;
 use std::sync::Arc;
 
@@ -15,11 +19,17 @@ use crate::query::{
 };
 use crate::{DocId, Score, TantivyError};
 
+/// Conjunction of JSON-aware subqueries.
+///
+/// When every subquery exposes JSON array metadata, only documents where all
+/// matches agree on the same array path are retained. Subqueries without
+/// array metadata (object-only) are accepted without restricting paths.
 pub struct JsonQuery {
     subqueries: Vec<Box<dyn Query>>,
 }
 
 impl JsonQuery {
+    /// Builds a `JsonQuery` from subqueries scoped to the same JSON field.
     pub fn new(subqueries: Vec<Box<dyn Query>>) -> Self {
         JsonQuery { subqueries }
     }
@@ -98,6 +108,9 @@ impl Weight for JsonWeight {
     }
 }
 
+/// Downcasts a scorer into a `JsonPathScorer` (term or phrase).
+///
+/// Other scorer types are rejected because they cannot expose JSON path metadata.
 fn convert_scorer_to_json(scorer: Box<dyn Scorer>) -> crate::Result<Box<dyn JsonPathScorer>> {
     if scorer.is::<TermScorer>() {
         let term_scorer = *(scorer
@@ -116,6 +129,7 @@ fn convert_scorer_to_json(scorer: Box<dyn Scorer>) -> crate::Result<Box<dyn Json
     ))
 }
 
+/// Scorer that enforces JSON-path agreement across all sub-scorers.
 struct JsonConstraintScorer {
     intersection: Intersection<Box<dyn JsonPathScorer>, Box<dyn JsonPathScorer>>,
     num_terms: usize,
@@ -140,11 +154,11 @@ impl JsonConstraintScorer {
     fn satisfies_constraint(&mut self) -> bool {
         self.common_indexes.clear();
         let mut initialized = false;
-        println!("\n\n");
         for ord in 0..self.num_terms {
             let scorer = self.intersection.docset_mut_specialized(ord);
             let paths_opt = scorer.json_array_paths_dyn();
-            println!("ord=={:?} paths_opts={:?}", ord, paths_opt);
+            // If the term has no array metadata, we cannot restrict by array element for it;
+            // consider it compatible with any path.
             let paths = match paths_opt {
                 None => return true,
                 Some([]) => return true,

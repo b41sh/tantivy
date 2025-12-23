@@ -177,6 +177,7 @@ impl PositionReader {
         }
     }
 
+    /// Returns true if JSON metadata was encoded for this term.
     pub fn has_json_metadata(&self) -> bool {
         !matches!(self.json_metadata, JsonMetadata::None)
     }

@@ -215,6 +215,10 @@ impl<'a> FieldSerializer<'a> {
         }
     }
 
+    /// Writes a document for the current term, attaching per-position JSON path metadata.
+    ///
+    /// `metadata` must be aligned with `position_deltas`: one path per position. If the
+    /// field/codec does not support JSON metadata, `metadata` is expected to be empty.
     pub fn write_doc_with_json_metadata(
         &mut self,
         doc_id: DocId,

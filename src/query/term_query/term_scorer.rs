@@ -15,7 +15,6 @@ pub struct TermScorer {
     postings: SegmentPostings,
     fieldnorm_reader: FieldNormReader,
     similarity_weight: Bm25Weight,
-    term: Term,
 }
 
 impl TermScorer {
@@ -23,13 +22,11 @@ impl TermScorer {
         postings: SegmentPostings,
         fieldnorm_reader: FieldNormReader,
         similarity_weight: Bm25Weight,
-        term: Term,
     ) -> TermScorer {
         TermScorer {
             postings,
             fieldnorm_reader,
             similarity_weight,
-            term,
         }
     }
 
@@ -55,9 +52,7 @@ impl TermScorer {
         let segment_postings =
             SegmentPostings::create_from_docs_and_tfs(doc_and_tfs, Some(fieldnorms));
         let fieldnorm_reader = FieldNormReader::for_test(fieldnorms);
-        let field = Field::from_field_id(0);
-        let term = Term::from_field_text(field, "test");
-        TermScorer::new(segment_postings, fieldnorm_reader, similarity_weight, term)
+        TermScorer::new(segment_postings, fieldnorm_reader, similarity_weight)
     }
 
     /// See `FreqReadingOption`.
@@ -89,11 +84,6 @@ impl TermScorer {
     }
 
     pub fn json_array_paths(&mut self) -> Option<&[Arc<[JsonArrayPathEntry]>]> {
-        println!(
-            "read json paths term={:?} path={:?}",
-            String::from_utf8_lossy(self.term.serialized_term()),
-            self.postings.json_array_paths()
-        );
         self.postings.json_array_paths()
     }
 

@@ -15,11 +15,11 @@ use super::logical_ast::*;
 use crate::index::Index;
 use crate::json_utils::convert_to_fast_value_and_append_to_json_term;
 use crate::query::range_query::{is_type_valid_for_fastfield_range_query, RangeQuery};
+use crate::query::term_query::JsonConstraintKey;
 use crate::query::{
     AllQuery, BooleanQuery, BoostQuery, EmptyQuery, FuzzyTermQuery, JsonQuery, Occur,
     PhrasePrefixQuery, PhraseQuery, Query, RegexQuery, TermQuery, TermSetQuery,
 };
-use crate::query::term_query::JsonConstraintKey;
 use crate::schema::{
     Facet, FacetParseError, Field, FieldType, IndexRecordOption, IntoIpv6Addr, JsonObjectOptions,
     Schema, Term, TextFieldIndexing, Type,

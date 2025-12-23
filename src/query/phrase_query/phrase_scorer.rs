@@ -1,5 +1,4 @@
 use std::cmp::Ordering;
-
 use std::sync::Arc;
 
 use common::json_path_writer::JsonArrayPathEntry;
@@ -423,10 +422,6 @@ impl<TPostings: Postings> PhraseScorer<TPostings> {
         self.phrase_count
     }
 
-    pub(crate) fn json_constraint_key(&self) -> Option<JsonConstraintKey> {
-        self.json_constraint_key.clone()
-    }
-
     pub(crate) fn get_intersection(&mut self) -> &[u32] {
         intersection(&mut self.left_positions, &self.right_positions);
         &self.left_positions
@@ -561,7 +556,7 @@ impl<TPostings: Postings> PhraseScorer<TPostings> {
             }
         }
         self.json_metadata = Some(json_metadata);
-        has_metadata.and_then(|_| self.json_metadata.as_deref())
+        has_metadata.and(self.json_metadata.as_deref())
     }
 
     /// Keep only the JSON paths that actually participate in a phrase match.

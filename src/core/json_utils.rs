@@ -146,8 +146,8 @@ pub(crate) fn index_json_value<'a, V: Value<'a>>(
                     );
                 }
                 ReferenceValueLeaf::U64(val) => {
-                    // try to parse to i64, since when querying we will apply the same logic and prefer
-                    // i64 values
+                    // try to parse to i64, since when querying we will apply the same logic and
+                    // prefer i64 values
                     set_path_id(
                         term_buffer,
                         ctx.path_to_unordered_id

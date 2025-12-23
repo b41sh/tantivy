@@ -1,8 +1,7 @@
 use std::sync::Arc;
 
-use common::HasLen;
-
 use common::json_path_writer::JsonArrayPathEntry;
+use common::HasLen;
 
 use crate::docset::DocSet;
 use crate::fastfield::AliveBitSet;
@@ -263,15 +262,10 @@ impl Postings for SegmentPostings {
     }
 
     fn json_array_paths(&mut self) -> Option<&[Arc<[JsonArrayPathEntry]>]> {
-        if self.json_metadata.is_none() {
-            return None;
-        }
+        self.json_metadata.as_ref()?;
         self.ensure_json_metadata();
-        self.json_metadata
-            .as_ref()
-            .map(|metadata| metadata.as_slice())
+        self.json_metadata.as_deref()
     }
-
 }
 
 impl SegmentPostings {

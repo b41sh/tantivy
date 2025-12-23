@@ -1,6 +1,8 @@
 use crate::postings::json_postings_writer::JsonPostingsWriter;
 use crate::postings::postings_writer::SpecializedPostingsWriter;
-use crate::postings::recorder::{DocIdRecorder, JsonPositionsRecorder, TermFrequencyRecorder, TfAndPositionRecorder};
+use crate::postings::recorder::{
+    DocIdRecorder, JsonPositionsRecorder, TermFrequencyRecorder, TfAndPositionRecorder,
+};
 use crate::postings::PostingsWriter;
 use crate::schema::{Field, FieldEntry, FieldType, IndexRecordOption, Schema};
 

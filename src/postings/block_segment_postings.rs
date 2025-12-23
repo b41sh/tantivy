@@ -135,7 +135,7 @@ impl BlockSegmentPostings {
             doc_freq,
             data: postings_data,
             skip_reader,
-             block_doc_range_start: 0,
+            block_doc_range_start: 0,
         };
         block_segment_postings.load_block();
         Ok(block_segment_postings)
@@ -314,8 +314,9 @@ impl BlockSegmentPostings {
         if self.block_is_loaded() {
             return;
         }
-        self.block_doc_range_start =
-            self.doc_freq.saturating_sub(self.skip_reader.remaining_docs());
+        self.block_doc_range_start = self
+            .doc_freq
+            .saturating_sub(self.skip_reader.remaining_docs());
         match self.skip_reader.block_info() {
             BlockInfo::BitPacked {
                 doc_num_bits,

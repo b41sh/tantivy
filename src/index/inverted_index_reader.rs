@@ -2,9 +2,8 @@ use std::convert::TryInto;
 use std::io;
 use std::sync::Arc;
 
-use common::HasLen;
 use common::json_path_writer::{JsonArrayPathEntry, JSON_END_OF_PATH};
-use common::{read_u32_vint, BinarySerializable, ByteCount};
+use common::{read_u32_vint, BinarySerializable, ByteCount, HasLen};
 #[cfg(feature = "quickwit")]
 use futures_util::{FutureExt, StreamExt, TryStreamExt};
 #[cfg(feature = "quickwit")]
@@ -63,8 +62,7 @@ impl InvertedIndexReader {
     ) -> io::Result<InvertedIndexReader> {
         let (total_num_tokens_slice, postings_body) = postings_file_slice.split(8);
         let total_num_tokens = u64::deserialize(&mut total_num_tokens_slice.read_bytes()?)?;
-        let (positions_body, json_path_table) =
-            split_json_path_table(positions_file_slice)?;
+        let (positions_body, json_path_table) = split_json_path_table(positions_file_slice)?;
         Ok(InvertedIndexReader {
             termdict,
             postings_file_slice: postings_body,
@@ -284,9 +282,7 @@ fn split_json_path_table(
     if positions_file_slice.len() < 5 {
         return Ok((positions_file_slice, None));
     }
-    let trailer = positions_file_slice
-        .slice_from_end(5)
-        .read_bytes()?;
+    let trailer = positions_file_slice.slice_from_end(5).read_bytes()?;
     if trailer.as_ref()[0] != crate::positions::JSON_PATH_TABLE_MARKER {
         return Ok((positions_file_slice, None));
     }
@@ -295,19 +291,18 @@ fn split_json_path_table(
     if positions_file_slice.len() < total_len {
         return Ok((positions_file_slice, None));
     }
-    let (body, table_slice_with_marker) =
-        positions_file_slice.split_from_end(total_len);
+    let (body, table_slice_with_marker) = positions_file_slice.split_from_end(total_len);
     let table_bytes = table_slice_with_marker.slice(0..table_len).read_bytes()?;
     let paths = parse_json_path_table(table_bytes.as_ref())?;
     Ok((body, Some(Arc::new(paths))))
 }
 
-fn parse_json_path_table(
-    data: &[u8],
-) -> io::Result<Vec<Arc<[JsonArrayPathEntry]>>> {
+fn parse_json_path_table(data: &[u8]) -> io::Result<Vec<Arc<[JsonArrayPathEntry]>>> {
     let mut cursor = data;
     if cursor.is_empty() {
-        return Ok(vec![Arc::from(Vec::<JsonArrayPathEntry>::new().into_boxed_slice())]);
+        return Ok(vec![Arc::from(
+            Vec::<JsonArrayPathEntry>::new().into_boxed_slice(),
+        )]);
     }
     let path_count = read_u32_vint(&mut cursor) as usize;
     let mut paths = Vec::with_capacity(path_count);
@@ -317,12 +312,17 @@ fn parse_json_path_table(
         for _ in 0..depth {
             let path_id = read_u32_vint(&mut cursor);
             let element_ord = read_u32_vint(&mut cursor);
-            path.push(JsonArrayPathEntry { path_id, element_ord });
+            path.push(JsonArrayPathEntry {
+                path_id,
+                element_ord,
+            });
         }
         paths.push(Arc::from(path.into_boxed_slice()));
     }
     if paths.is_empty() {
-        paths.push(Arc::from(Vec::<JsonArrayPathEntry>::new().into_boxed_slice()));
+        paths.push(Arc::from(
+            Vec::<JsonArrayPathEntry>::new().into_boxed_slice(),
+        ));
     }
     Ok(paths)
 }

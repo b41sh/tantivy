@@ -89,12 +89,12 @@ impl TermScorer {
     }
 
     pub fn json_array_paths(&mut self) -> Option<&[Arc<[JsonArrayPathEntry]>]> {
-        println!("read json paths term={:?} path={:?}", String::from_utf8_lossy(self.term.serialized_term()), self.postings.json_array_paths());
+        println!(
+            "read json paths term={:?} path={:?}",
+            String::from_utf8_lossy(self.term.serialized_term()),
+            self.postings.json_array_paths()
+        );
         self.postings.json_array_paths()
-    }
-
-    pub fn json_constraint_key(&self) -> Option<JsonConstraintKey> {
-        JsonConstraintKey::from_term(&self.term)
     }
 
     pub fn fieldnorm_id(&self) -> u8 {
@@ -165,7 +165,8 @@ impl JsonConstraintKey {
             return None;
         }
         let path = &path_bytes[..path_bytes.len() - 1];
-        let parent_path = if let Some(pos) = path.iter().rposition(|b| *b == JSON_PATH_SEGMENT_SEP) {
+        let parent_path = if let Some(pos) = path.iter().rposition(|b| *b == JSON_PATH_SEGMENT_SEP)
+        {
             path[..pos].to_vec()
         } else {
             Vec::new()

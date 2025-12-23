@@ -1,15 +1,12 @@
 use std::convert::TryInto;
 use std::io;
-
 use std::sync::Arc;
 
 use common::json_path_writer::JsonArrayPathEntry;
 use common::{read_u32_vint, BinarySerializable, VInt};
 
 use crate::directory::OwnedBytes;
-use crate::positions::{
-    COMPRESSION_BLOCK_SIZE, JSON_METADATA_MARKER, JSON_PATH_TABLE_MARKER,
-};
+use crate::positions::{COMPRESSION_BLOCK_SIZE, JSON_METADATA_MARKER};
 use crate::postings::compression::{BlockDecoder, VIntDecoder};
 use crate::DocId;
 
@@ -51,11 +48,9 @@ impl PositionReader {
             let slice = positions.as_slice();
             let marker_idx = slice.len() - 5;
             if slice[marker_idx] == JSON_METADATA_MARKER {
-                let meta_len = u32::from_be_bytes(
-                    slice[marker_idx + 1..marker_idx + 5]
-                        .try_into()
-                        .unwrap(),
-                ) as usize;
+                let meta_len =
+                    u32::from_be_bytes(slice[marker_idx + 1..marker_idx + 5].try_into().unwrap())
+                        as usize;
                 if marker_idx >= meta_len {
                     let metadata_bytes = positions.slice(marker_idx - meta_len..marker_idx);
                     json_metadata =
@@ -189,10 +184,6 @@ impl PositionReader {
             JsonMetadata::Indexed(indexed) => indexed.fill(doc_id, doc_ord, output),
         }
     }
-
-    fn disable_metadata(&mut self) {
-        self.json_metadata = JsonMetadata::None;
-    }
 }
 
 fn read_vint_and_update(cursor: &mut &[u8], consumed: &mut usize) -> u32 {
@@ -251,13 +242,13 @@ fn parse_json_metadata(
         prefix_sums.push(sum);
     }
     debug_assert_eq!(sum as usize, total_indexes);
-    Ok(JsonMetadata::Indexed(JsonIndexedMetadata {
+    Ok(JsonMetadata::Indexed(Box::new(JsonIndexedMetadata {
         counts,
         prefix_sums,
         indexes,
         scratch: Vec::new(),
         global_paths,
-    }))
+    })))
 }
 
 fn decode_bitpacked_values(
@@ -309,7 +300,7 @@ fn decode_bitpacked_values(
 #[derive(Clone)]
 enum JsonMetadata {
     None,
-    Indexed(JsonIndexedMetadata),
+    Indexed(Box<JsonIndexedMetadata>),
 }
 
 impl JsonMetadata {
@@ -330,7 +321,12 @@ struct JsonIndexedMetadata {
 }
 
 impl JsonIndexedMetadata {
-    fn fill(&mut self, _doc_id: DocId, doc_ord: u32, output: &mut Vec<Arc<[JsonArrayPathEntry]>>) -> bool {
+    fn fill(
+        &mut self,
+        _doc_id: DocId,
+        doc_ord: u32,
+        output: &mut Vec<Arc<[JsonArrayPathEntry]>>,
+    ) -> bool {
         let doc_ord = doc_ord as usize;
         if doc_ord >= self.counts.len() {
             output.clear();
@@ -377,7 +373,7 @@ struct JsonIndexBlocks {
 
 impl JsonIndexBlocks {
     fn parse(
-        //metadata_bytes: OwnedBytes,
+        // metadata_bytes: OwnedBytes,
         cursor: &mut &[u8],
         consumed: &mut usize,
         total_indexes: usize,
@@ -393,8 +389,8 @@ impl JsonIndexBlocks {
             block_offsets.push(total_block_bytes);
             total_block_bytes += (bit_width as usize * COMPRESSION_BLOCK_SIZE) / 8;
         }
-        //let block_data = metadata_bytes.slice(*consumed..*consumed + total_block_bytes);
-        //let block_data = &cursor[..total_block_bytes];
+        // let block_data = metadata_bytes.slice(*consumed..*consumed + total_block_bytes);
+        // let block_data = &cursor[..total_block_bytes];
         let block_data = OwnedBytes::new(cursor[..total_block_bytes].to_vec());
         *cursor = &cursor[total_block_bytes..];
         *consumed += total_block_bytes;
@@ -435,9 +431,7 @@ impl JsonIndexBlocks {
             self.ensure_block(block_idx);
             let within_block = offset % COMPRESSION_BLOCK_SIZE;
             let take = remaining.min(COMPRESSION_BLOCK_SIZE - within_block);
-            output.extend_from_slice(
-                &self.decoded_block[within_block..within_block + take],
-            );
+            output.extend_from_slice(&self.decoded_block[within_block..within_block + take]);
             offset += take;
             remaining -= take;
         }

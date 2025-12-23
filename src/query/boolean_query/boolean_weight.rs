@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::docset::{DocSet, COLLECT_BLOCK_BUFFER_LEN, TERMINATED};
+use crate::docset::{DocSet, COLLECT_BLOCK_BUFFER_LEN};
 use crate::index::SegmentReader;
 use crate::postings::FreqReadingOption;
 use crate::query::disjunction::Disjunction;
@@ -9,7 +9,7 @@ use crate::query::score_combiner::{DoNothingCombiner, ScoreCombiner};
 use crate::query::term_query::TermScorer;
 use crate::query::weight::{for_each_docset_buffered, for_each_pruning_scorer, for_each_scorer};
 use crate::query::{
-    intersect_scorers, BufferedUnionScorer, EmptyScorer, Exclude, Explanation, Intersection, Occur,
+    intersect_scorers, BufferedUnionScorer, EmptyScorer, Exclude, Explanation, Occur,
     RequiredOptionalScorer, Scorer, Weight,
 };
 use crate::{DocId, Score};

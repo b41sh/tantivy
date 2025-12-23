@@ -46,7 +46,6 @@ pub(crate) mod tests {
 
     use common::json_path_writer::JsonArrayPathEntry;
     use common::write_u32_vint;
-
     use proptest::prelude::*;
     use proptest::sample::select;
 
@@ -249,9 +248,9 @@ pub(crate) mod tests {
         let mut metadata = Vec::new();
         write_u32_vint(1, &mut metadata).unwrap(); // version marker
         write_u32_vint(3, &mut metadata).unwrap(); // doc count
-        // counts
+                                                   // counts
         write_u32_vint(0, &mut metadata).unwrap(); // num blocks
-        // remainder counts
+                                                   // remainder counts
         write_u32_vint(1, &mut metadata).unwrap();
         write_u32_vint(1, &mut metadata).unwrap();
         write_u32_vint(0, &mut metadata).unwrap();
@@ -266,15 +265,14 @@ pub(crate) mod tests {
             Vec::new(),
             vec![JsonArrayPathEntry {
                 path_id: 30,
-                element_ord: 0
+                element_ord: 0,
             }],
         ];
         let global_paths_arc: Vec<Arc<[JsonArrayPathEntry]>> = global_paths
             .into_iter()
             .map(|path| Arc::from(path.into_boxed_slice()))
             .collect();
-        let mut reader =
-            PositionReader::open(positions_data, Some(Arc::new(global_paths_arc)))?;
+        let mut reader = PositionReader::open(positions_data, Some(Arc::new(global_paths_arc)))?;
         let mut metadata_paths = Vec::new();
         assert!(reader.fill_doc_json_metadata_refs(10, 0, &mut metadata_paths));
         assert_eq!(metadata_paths.len(), 1);

@@ -1,5 +1,5 @@
 use common::json_path_writer::JsonArrayPathEntry;
-use common::{read_u32_vint, write_u32_vint};
+use common::read_u32_vint;
 use stacker::{ExpUnrolledLinkedList, MemoryArena};
 
 use crate::postings::FieldSerializer;
@@ -336,7 +336,9 @@ impl Recorder for JsonPositionsRecorder {
 
     #[inline]
     fn close_doc(&mut self, arena: &mut MemoryArena) {
-        self.position_stack.writer(arena).write_u32_vint(POSITION_END);
+        self.position_stack
+            .writer(arena)
+            .write_u32_vint(POSITION_END);
     }
 
     fn serialize(

@@ -1,11 +1,9 @@
 use std::io::{self, Write};
-use common::json_path_writer::JsonArrayPathEntry;
 
+use common::json_path_writer::JsonArrayPathEntry;
 use common::{write_u32_vint, BinarySerializable, CountingWriter, VInt};
 
-use crate::positions::{
-    COMPRESSION_BLOCK_SIZE, JSON_METADATA_MARKER, JSON_PATH_TABLE_MARKER,
-};
+use crate::positions::{COMPRESSION_BLOCK_SIZE, JSON_METADATA_MARKER, JSON_PATH_TABLE_MARKER};
 use crate::postings::compression::{BlockEncoder, VIntEncoder};
 
 /// The PositionSerializer is in charge of serializing all of the positions
@@ -101,10 +99,7 @@ impl<W: io::Write> PositionSerializer<W> {
         Ok(())
     }
 
-    pub fn append_json_path_table(
-        &mut self,
-        paths: &[Vec<JsonArrayPathEntry>],
-    ) -> io::Result<()> {
+    pub fn append_json_path_table(&mut self, paths: &[Vec<JsonArrayPathEntry>]) -> io::Result<()> {
         if paths.len() <= 1 {
             return Ok(());
         }
@@ -118,8 +113,7 @@ impl<W: io::Write> PositionSerializer<W> {
             }
         }
         self.positions_wrt.write_all(&buffer)?;
-        self.positions_wrt
-            .write_all(&[JSON_PATH_TABLE_MARKER])?;
+        self.positions_wrt.write_all(&[JSON_PATH_TABLE_MARKER])?;
         self.positions_wrt
             .write_all(&(buffer.len() as u32).to_be_bytes())?;
         Ok(())

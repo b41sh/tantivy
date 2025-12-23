@@ -2,18 +2,18 @@ use std::fmt;
 use std::sync::Arc;
 
 use common::json_path_writer::JsonArrayPathEntry;
+
 use crate::docset::{DocSet, TERMINATED};
 use crate::index::SegmentReader;
+use crate::postings::SegmentPostings;
 use crate::query::explanation::does_not_match;
 use crate::query::json_utils::JsonPathScorer;
 use crate::query::phrase_query::PhraseScorer;
 use crate::query::term_query::TermScorer;
 use crate::query::{
-    EnableScoring, EmptyScorer, Explanation, Intersection, Query, QueryClone, Scorer, Weight,
+    EmptyScorer, EnableScoring, Explanation, Intersection, Query, QueryClone, Scorer, Weight,
 };
-use crate::TantivyError;
-use crate::{DocId, Score};
-use crate::postings::SegmentPostings;
+use crate::{DocId, Score, TantivyError};
 
 pub struct JsonQuery {
     subqueries: Vec<Box<dyn Query>>,
@@ -98,9 +98,7 @@ impl Weight for JsonWeight {
     }
 }
 
-fn convert_scorer_to_json(
-    scorer: Box<dyn Scorer>,
-) -> crate::Result<Box<dyn JsonPathScorer>> {
+fn convert_scorer_to_json(scorer: Box<dyn Scorer>) -> crate::Result<Box<dyn JsonPathScorer>> {
     if scorer.is::<TermScorer>() {
         let term_scorer = *(scorer
             .downcast::<TermScorer>()
@@ -108,10 +106,9 @@ fn convert_scorer_to_json(
         return Ok(Box::new(term_scorer));
     }
     if scorer.is::<PhraseScorer<SegmentPostings>>() {
-        let phrase_scorer =
-            *(scorer
-                .downcast::<PhraseScorer<SegmentPostings>>()
-                .map_err(|_| TantivyError::InvalidArgument("Invalid json scorer".to_string()))?);
+        let phrase_scorer = *(scorer
+            .downcast::<PhraseScorer<SegmentPostings>>()
+            .map_err(|_| TantivyError::InvalidArgument("Invalid json scorer".to_string()))?);
         return Ok(Box::new(phrase_scorer));
     }
     Err(TantivyError::InvalidArgument(
@@ -128,7 +125,7 @@ struct JsonConstraintScorer {
 impl JsonConstraintScorer {
     fn new(json_scorers: Vec<Box<dyn JsonPathScorer>>, num_docs: u32) -> Self {
         let num_terms = json_scorers.len();
-        let mut intersection = Intersection::new(json_scorers, num_docs);
+        let intersection = Intersection::new(json_scorers, num_docs);
         let mut scorer = JsonConstraintScorer {
             intersection,
             num_terms,
@@ -150,7 +147,7 @@ impl JsonConstraintScorer {
             println!("ord=={:?} paths_opts={:?}", ord, paths_opt);
             let paths = match paths_opt {
                 None => return true,
-                Some(paths) if paths.is_empty() => return true,
+                Some([]) => return true,
                 Some(paths) => paths,
             };
             if !initialized {
@@ -210,7 +207,10 @@ fn populate_common_indexes(
 ) {
     common.clear();
     for path in paths {
-        if !common.iter().any(|existing| existing.as_ref() == path.as_ref()) {
+        if !common
+            .iter()
+            .any(|existing| existing.as_ref() == path.as_ref())
+        {
             common.push(path.clone());
         }
     }
@@ -220,11 +220,7 @@ fn retain_common_indexes(
     common: &mut Vec<Arc<[JsonArrayPathEntry]>>,
     paths: &[Arc<[JsonArrayPathEntry]>],
 ) {
-    common.retain(|candidate| {
-        paths
-            .iter()
-            .any(|path| path.as_ref() == candidate.as_ref())
-    });
+    common.retain(|candidate| paths.iter().any(|path| path.as_ref() == candidate.as_ref()));
 }
 
 #[cfg(test)]
@@ -232,8 +228,8 @@ mod tests {
     use crate::collector::TopDocs;
     use crate::query::{JsonQuery, PhraseQuery, Query, QueryParser, TermQuery};
     use crate::schema::{IndexRecordOption, Schema, TEXT};
-    use crate::{doc, Index, Term};
     use crate::serde_json::json;
+    use crate::{doc, Index, Term};
 
     #[test]
     fn test_json_query_enforces_same_array() -> crate::Result<()> {
@@ -297,15 +293,13 @@ mod tests {
 
         let query_parser = QueryParser::for_index(&index, vec![doc_body_field]);
         let query = query_parser.parse_query(
-            "doc_body.videoInfo.extraData.name:\"codec foo\" AND doc_body.videoInfo.extraData.type:mp4",
+            "doc_body.videoInfo.extraData.name:\"codec foo\" AND \
+             doc_body.videoInfo.extraData.type:mp4",
         )?;
         let top_docs = searcher.search(&query, &TopDocs::with_limit(10))?;
         print!("\n\n\n\n--0000---top_docs={:?}", top_docs);
         assert_eq!(top_docs.len(), 1);
         print!("\n\n\n\n");
-
-
-
 
         let mut codec_term =
             Term::from_field_json_path(doc_body_field, "videoInfo.extraData.name", false);
@@ -317,8 +311,7 @@ mod tests {
             Term::from_field_json_path(doc_body_field, "videoInfo.extraData.type", false);
         type_term.append_type_and_str("mp4");
 
-        let phrase_query: Box<dyn Query> =
-            Box::new(PhraseQuery::new(vec![codec_term, foo_term]));
+        let phrase_query: Box<dyn Query> = Box::new(PhraseQuery::new(vec![codec_term, foo_term]));
         let query = JsonQuery::new(vec![
             phrase_query,
             Box::new(TermQuery::new(
@@ -363,8 +356,7 @@ mod tests {
             Term::from_field_json_path(doc_body_field, "videoInfo.extraData.type", false);
         type_term.append_type_and_str("mp4");
 
-        let phrase_query: Box<dyn Query> =
-            Box::new(PhraseQuery::new(vec![codec_term, foo_term]));
+        let phrase_query: Box<dyn Query> = Box::new(PhraseQuery::new(vec![codec_term, foo_term]));
         let query = JsonQuery::new(vec![
             phrase_query,
             Box::new(TermQuery::new(

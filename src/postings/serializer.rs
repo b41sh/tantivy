@@ -9,7 +9,7 @@ use super::TermInfo;
 use crate::directory::{CompositeWrite, WritePtr};
 use crate::fieldnorm::FieldNormReader;
 use crate::index::Segment;
-use crate::positions::{PositionSerializer, JSON_METADATA_MARKER};
+use crate::positions::PositionSerializer;
 use crate::postings::compression::{BlockEncoder, VIntEncoder, COMPRESSION_BLOCK_SIZE};
 use crate::postings::skip::SkipSerializer;
 use crate::query::Bm25Weight;
@@ -144,8 +144,8 @@ impl<'a> FieldSerializer<'a> {
             None
         };
 
-        let supports_json = matches!(field_type, FieldType::JsonObject(_))
-            && index_record_option.has_positions();
+        let supports_json =
+            matches!(field_type, FieldType::JsonObject(_)) && index_record_option.has_positions();
         let json_metadata = supports_json.then(JsonTermMetadataBuilder::default);
         let json_path_table = supports_json.then(JsonPathTableBuilder::new);
         Ok(FieldSerializer {
@@ -155,7 +155,7 @@ impl<'a> FieldSerializer<'a> {
             current_term_info: TermInfo::default(),
             term_open: false,
             json_metadata,
-             json_path_table,
+            json_path_table,
         })
     }
 
@@ -223,7 +223,9 @@ impl<'a> FieldSerializer<'a> {
         metadata: &[Vec<JsonArrayPathEntry>],
     ) {
         self.write_doc(doc_id, term_freq, position_deltas);
-        if let (Some(builder), Some(path_table)) = (self.json_metadata.as_mut(), self.json_path_table.as_mut()) {
+        if let (Some(builder), Some(path_table)) =
+            (self.json_metadata.as_mut(), self.json_path_table.as_mut())
+        {
             builder.add_doc(metadata, path_table);
         } else {
             debug_assert!(metadata.is_empty());
@@ -319,7 +321,11 @@ struct JsonTermMetadataBuilder {
 }
 
 impl JsonTermMetadataBuilder {
-    fn add_doc(&mut self, metadata: &[Vec<JsonArrayPathEntry>], path_table: &mut JsonPathTableBuilder) {
+    fn add_doc(
+        &mut self,
+        metadata: &[Vec<JsonArrayPathEntry>],
+        path_table: &mut JsonPathTableBuilder,
+    ) {
         let mut indexes = Vec::with_capacity(metadata.len());
         for json_array_path in metadata {
             let index = path_table.get_or_insert_id(json_array_path);
@@ -342,7 +348,11 @@ impl JsonTermMetadataBuilder {
         }
         let num_docs = self.doc_entries.len();
 
-        let counts: Vec<u32> = self.doc_entries.iter().map(|indexes| indexes.len() as u32).collect();
+        let counts: Vec<u32> = self
+            .doc_entries
+            .iter()
+            .map(|indexes| indexes.len() as u32)
+            .collect();
         if counts.iter().all(|count| *count == 0) {
             self.doc_entries.clear();
             self.has_non_empty_entry = false;
@@ -371,11 +381,7 @@ impl JsonTermMetadataBuilder {
         Some(bytes)
     }
 
-    fn encode_bitpacked(
-        values: &[u32],
-        bytes: &mut Vec<u8>,
-        block_encoder: &mut BlockEncoder,
-    ) {
+    fn encode_bitpacked(values: &[u32], bytes: &mut Vec<u8>, block_encoder: &mut BlockEncoder) {
         let num_blocks = values.len() / COMPRESSION_BLOCK_SIZE;
         write_u32_vint(num_blocks as u32, bytes).expect("writing to Vec cannot fail");
         let mut bit_widths = Vec::with_capacity(num_blocks);

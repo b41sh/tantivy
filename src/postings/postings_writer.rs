@@ -2,9 +2,8 @@ use std::io;
 use std::marker::PhantomData;
 use std::ops::Range;
 
-use stacker::Addr;
-
 use common::json_path_writer::JsonArrayPathEntry;
+use stacker::Addr;
 
 use crate::fieldnorm::FieldNormReaders;
 use crate::indexer::path_to_unordered_id::OrderedPathId;

@@ -266,7 +266,7 @@ mod tests {
                 IndexRecordOption::WithFreqsAndPositions,
             )),
         ]);
-        let top_docs = searcher.search(&query, &TopDocs::with_limit(10))?;
+        let top_docs = searcher.search(&query, &TopDocs::with_limit(10).order_by_score())?;
         assert_eq!(top_docs.len(), 1);
         assert_eq!(top_docs[0].1.doc_id, 0u32);
         Ok(())
@@ -296,7 +296,7 @@ mod tests {
             "doc_body.videoInfo.extraData.name:\"codec foo\" AND \
              doc_body.videoInfo.extraData.type:mp4",
         )?;
-        let top_docs = searcher.search(&query, &TopDocs::with_limit(10))?;
+        let top_docs = searcher.search(&query, &TopDocs::with_limit(10).order_by_score())?;
         print!("\n\n\n\n--0000---top_docs={:?}", top_docs);
         assert_eq!(top_docs.len(), 1);
         print!("\n\n\n\n");
@@ -319,7 +319,7 @@ mod tests {
                 IndexRecordOption::WithFreqsAndPositions,
             )),
         ]);
-        let top_docs = searcher.search(&query, &TopDocs::with_limit(10))?;
+        let top_docs = searcher.search(&query, &TopDocs::with_limit(10).order_by_score())?;
         assert_eq!(top_docs.len(), 1);
         assert_eq!(top_docs[0].1.doc_id, 0u32);
         Ok(())
@@ -364,7 +364,7 @@ mod tests {
                 IndexRecordOption::WithFreqsAndPositions,
             )),
         ]);
-        let top_docs = searcher.search(&query, &TopDocs::with_limit(10))?;
+        let top_docs = searcher.search(&query, &TopDocs::with_limit(10).order_by_score())?;
         assert_eq!(top_docs.len(), 1);
         assert_eq!(top_docs[0].1.doc_id, 0u32);
         Ok(())
@@ -392,7 +392,7 @@ mod tests {
         let query = query_parser.parse_query(
             "doc_body.videoInfo.extraData.name:codecfoo AND doc_body.videoInfo.extraData.type:mp4",
         )?;
-        let top_docs = searcher.search(&query, &TopDocs::with_limit(10))?;
+        let top_docs = searcher.search(&query, &TopDocs::with_limit(10).order_by_score())?;
         assert_eq!(top_docs.len(), 1);
         assert_eq!(top_docs[0].1.doc_id, 0u32);
         Ok(())

@@ -298,6 +298,8 @@ impl SegmentPostings {
             self.json_metadata_doc = None;
             return;
         }
+        // Decode the per-doc JSON paths for the current doc ord; this is used by JSON
+        // queries to enforce that multiple terms hit the same array element.
         if position_reader.fill_doc_json_metadata_refs(current_doc, doc_ord, json_metadata) {
             self.json_metadata_doc = Some(current_doc);
         } else {

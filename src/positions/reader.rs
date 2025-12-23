@@ -40,7 +40,7 @@ pub struct PositionReader {
     // These are just copies used for .reset().
     original_bit_widths: OwnedBytes,
     original_positions: OwnedBytes,
-    // The metadata of JsonPath.
+    // Per-term JSON path metadata decoded from the positions trailer (if present).
     json_metadata: JsonMetadata,
 }
 
@@ -63,6 +63,7 @@ impl PositionReader {
                         as usize;
                 if marker_idx >= meta_len {
                     let metadata_bytes = positions.slice(marker_idx - meta_len..marker_idx);
+                    // If present, decode JSON metadata using the shared path table.
                     json_metadata =
                         parse_json_metadata(metadata_bytes.clone(), json_path_table.clone())?;
                     positions = positions.slice(0..marker_idx - meta_len);
@@ -307,7 +308,9 @@ fn decode_bitpacked_values(
 
 #[derive(Clone)]
 enum JsonMetadata {
+    /// No metadata stored for this term.
     None,
+    /// Per-doc list of path ids compressed in blocks.
     Indexed(Box<JsonIndexedMetadata>),
 }
 
@@ -321,6 +324,7 @@ impl JsonMetadata {
 
 #[derive(Clone)]
 struct JsonIndexedMetadata {
+    // Number of paths per doc and prefix sums allow slicing into the flat index stream.
     counts: Vec<u32>,
     prefix_sums: Vec<u32>,
     indexes: JsonIndexBlocks,

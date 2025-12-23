@@ -35,6 +35,7 @@ pub struct InvertedIndexReader {
     positions_file_slice: FileSlice,
     record_option: IndexRecordOption,
     total_num_tokens: u64,
+    // Lookup table mapping compact path ids back to concrete JSON array paths.
     json_path_table: Option<Arc<Vec<Arc<[JsonArrayPathEntry]>>>>,
 }
 
@@ -240,6 +241,7 @@ impl InvertedIndexReader {
                 let positions_data = self
                     .positions_file_slice
                     .read_bytes_slice(term_info.positions_range.clone())?;
+                // Pass the shared path table so positions can decode per-position JSON metadata.
                 let position_reader =
                     PositionReader::open(positions_data, self.json_path_table.clone())?;
                 Some(position_reader)
@@ -291,6 +293,8 @@ impl InvertedIndexReader {
 fn split_json_path_table(
     positions_file_slice: FileSlice,
 ) -> io::Result<(FileSlice, Option<Arc<Vec<Arc<[JsonArrayPathEntry]>>>>)> {
+    // Positions files may end with an optional JSON path table, marked with a trailer
+    // byte + length. Peel it off and keep the remainder as the actual positions body.
     if positions_file_slice.len() < 5 {
         return Ok((positions_file_slice, None));
     }
@@ -310,6 +314,7 @@ fn split_json_path_table(
 }
 
 fn parse_json_path_table(data: &[u8]) -> io::Result<Vec<Arc<[JsonArrayPathEntry]>>> {
+    // The table is a prefix-encoded list of paths, where entry 0 is the empty path.
     let mut cursor = data;
     if cursor.is_empty() {
         return Ok(vec![Arc::from(

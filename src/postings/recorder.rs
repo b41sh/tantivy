@@ -327,6 +327,8 @@ impl Recorder for JsonPositionsRecorder {
             .writer(arena)
             .write_u32_vint(position.wrapping_add(1u32));
         let mut metadata_writer = self.metadata_stack.writer(arena);
+        // Store the JSON path (depth + entries) alongside the position so we can
+        // later associate positions back to their array element.
         metadata_writer.write_u32_vint(array_path.len() as u32);
         for entry in array_path {
             metadata_writer.write_u32_vint(entry.path_id);

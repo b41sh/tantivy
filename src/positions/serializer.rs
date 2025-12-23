@@ -88,6 +88,9 @@ impl<W: io::Write> PositionSerializer<W> {
     }
 
     /// Appends a metadata chunk specific to JSON fields.
+    ///
+    /// The bytes are followed by a marker and length so `PositionReader` can
+    /// peel them off when opening a term.
     pub fn append_json_metadata(&mut self, metadata: &[u8]) -> io::Result<()> {
         if metadata.is_empty() {
             return Ok(());
@@ -99,6 +102,10 @@ impl<W: io::Write> PositionSerializer<W> {
         Ok(())
     }
 
+    /// Writes the global JSON path table once per field, after all terms.
+    ///
+    /// Entry 0 is the empty path; additional entries map compact path ids back to
+    /// concrete `JsonArrayPathEntry` sequences.
     pub fn append_json_path_table(&mut self, paths: &[Vec<JsonArrayPathEntry>]) -> io::Result<()> {
         if paths.len() <= 1 {
             return Ok(());

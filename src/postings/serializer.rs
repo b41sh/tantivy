@@ -287,6 +287,7 @@ struct JsonPathTableBuilder {
 }
 
 impl JsonPathTableBuilder {
+    /// Tracks distinct JSON array paths encountered in the field and assigns stable ids.
     fn new() -> Self {
         JsonPathTableBuilder {
             paths: FxHashMap::default(),
@@ -321,6 +322,7 @@ struct JsonTermMetadataBuilder {
 }
 
 impl JsonTermMetadataBuilder {
+    /// Record the set of path ids for a single document occurrence of the term.
     fn add_doc(
         &mut self,
         metadata: &[Vec<JsonArrayPathEntry>],

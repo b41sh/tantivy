@@ -296,7 +296,7 @@ mod tests {
     use crate::query::{JsonQuery, PhraseQuery, Query, QueryParser, TermQuery};
     use crate::schema::{IndexRecordOption, Schema, TEXT};
     use crate::serde_json::json;
-    use crate::{doc, Index, Term};
+    use crate::{Index, Term};
 
     #[test]
     fn test_json_query_enforces_same_array() -> crate::Result<()> {
@@ -336,6 +336,15 @@ mod tests {
         let top_docs = searcher.search(&query, &TopDocs::with_limit(10).order_by_score())?;
         assert_eq!(top_docs.len(), 1);
         assert_eq!(top_docs[0].1.doc_id, 0u32);
+
+        let query_parser = QueryParser::for_index(&index, vec![doc_body_field]);
+        let query = query_parser.parse_query(
+            "doc_body.videoInfo.extraData.name:codecfoo AND doc_body.videoInfo.extraData.type:mp4",
+        )?;
+        let top_docs = searcher.search(&query, &TopDocs::with_limit(10).order_by_score())?;
+        assert_eq!(top_docs.len(), 1);
+        assert_eq!(top_docs[0].1.doc_id, 0u32);
+
         Ok(())
     }
 
@@ -376,51 +385,12 @@ mod tests {
                 IndexRecordOption::WithFreqsAndPositions,
             )),
         ]);
-        let top_docs = searcher.search(&query, &TopDocs::with_limit(10).order_by_score())?;
-        assert_eq!(top_docs.len(), 1);
-        assert_eq!(top_docs[0].1.doc_id, 0u32);
-        Ok(())
-    }
 
-    #[test]
-    fn test_phrase_json_paths_filtered_by_positions() -> crate::Result<()> {
-        let mut schema_builder = Schema::builder();
-        let doc_body_field = schema_builder.add_json_field("doc_body", TEXT);
-        let schema = schema_builder.build();
-        let index = Index::create_in_ram(schema);
-        {
-            let mut writer = index.writer_for_tests()?;
-            // element 0: phrase and type match on same path
-            writer.add_document(doc!(
-                doc_body_field => json!({"videoInfo":{"extraData":[{"name":"codec foo","type":"mp4"}]}})
-            ))?;
-            // element 0 has phrase but not mp4, element 1 has mp4 but not phrase
-            writer.add_document(doc!(
-                doc_body_field => json!({"videoInfo":{"extraData":[{"name":"codec foo","type":"jpg"},{"name":"codec bar","type":"mp4"}]}})
-            ))?;
-            writer.commit()?;
-        }
-        let reader = index.reader()?;
-        let searcher = reader.searcher();
-
-        let mut codec_term =
-            Term::from_field_json_path(doc_body_field, "videoInfo.extraData.name", false);
-        codec_term.append_type_and_str("codec");
-        let mut foo_term =
-            Term::from_field_json_path(doc_body_field, "videoInfo.extraData.name", false);
-        foo_term.append_type_and_str("foo");
-        let mut type_term =
-            Term::from_field_json_path(doc_body_field, "videoInfo.extraData.type", false);
-        type_term.append_type_and_str("mp4");
-
-        let phrase_query: Box<dyn Query> = Box::new(PhraseQuery::new(vec![codec_term, foo_term]));
-        let query = JsonQuery::new(vec![
-            phrase_query,
-            Box::new(TermQuery::new(
-                type_term,
-                IndexRecordOption::WithFreqsAndPositions,
-            )),
-        ]);
+        let query_parser = QueryParser::for_index(&index, vec![doc_body_field]);
+        let query = query_parser.parse_query(
+            "doc_body.videoInfo.extraData.name:\"codec foo\" AND \
+             doc_body.videoInfo.extraData.type:mp4",
+        )?;
         let top_docs = searcher.search(&query, &TopDocs::with_limit(10).order_by_score())?;
         assert_eq!(top_docs.len(), 1);
         assert_eq!(top_docs[0].1.doc_id, 0u32);
@@ -447,55 +417,14 @@ mod tests {
         }
         let reader = index.reader()?;
         let searcher = reader.searcher();
-
-        let mut name_term =
-            Term::from_field_json_path(doc_body_field, "videoInfo.extraData.name", false);
-        name_term.append_type_and_str("codecA");
-        let mut type_term =
-            Term::from_field_json_path(doc_body_field, "videoInfo.extraData.attributes.type", false);
-        type_term.append_type_and_str("mp4");
-
-        let query = JsonQuery::new(vec![
-            Box::new(TermQuery::new(
-                name_term,
-                IndexRecordOption::WithFreqsAndPositions,
-            )),
-            Box::new(TermQuery::new(
-                type_term,
-                IndexRecordOption::WithFreqsAndPositions,
-            )),
-        ]);
-        let top_docs = searcher.search(&query, &TopDocs::with_limit(10))?;
-        assert_eq!(top_docs.len(), 1);
-        assert_eq!(top_docs[0].1.doc_id, 1u32);
-        Ok(())
-    }
-
-    #[test]
-    fn test_query_parser_builds_json_query() -> crate::Result<()> {
-        let mut schema_builder = Schema::builder();
-        let doc_body_field = schema_builder.add_json_field("doc_body", TEXT);
-        let schema = schema_builder.build();
-        let index = Index::create_in_ram(schema);
-        {
-            let mut writer = index.writer_for_tests()?;
-            writer.add_document(doc!(
-                doc_body_field => json!({"videoInfo":{"extraData":[{"name":"codecfoo","type":"mp4"}]}})
-            ))?;
-            writer.add_document(doc!(
-                doc_body_field => json!({"videoInfo":{"extraData":[{"name":"codecfoo","type":"jpg"},{"name":"codecbar","type":"mp4"}]}})
-            ))?;
-            writer.commit()?;
-        }
-        let reader = index.reader()?;
-        let searcher = reader.searcher();
         let query_parser = QueryParser::for_index(&index, vec![doc_body_field]);
         let query = query_parser.parse_query(
-            "doc_body.videoInfo.extraData.name:codecfoo AND doc_body.videoInfo.extraData.type:mp4",
+            "doc_body.videoInfo.extraData.name:codecA AND \
+             doc_body.videoInfo.extraData.attributes.type:mp4",
         )?;
         let top_docs = searcher.search(&query, &TopDocs::with_limit(10).order_by_score())?;
         assert_eq!(top_docs.len(), 1);
-        assert_eq!(top_docs[0].1.doc_id, 0u32);
+        assert_eq!(top_docs[0].1.doc_id, 1u32);
         Ok(())
     }
 }

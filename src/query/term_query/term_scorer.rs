@@ -150,7 +150,9 @@ impl JsonConstraintKey {
         }
         // Only the field matters for grouping; path-level filtering is enforced later by
         // intersecting actual array paths at query time.
-        Some(JsonConstraintKey { field: term.field() })
+        Some(JsonConstraintKey {
+            field: term.field(),
+        })
     }
 }
 

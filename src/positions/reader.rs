@@ -182,6 +182,9 @@ impl PositionReader {
         !matches!(self.json_metadata, JsonMetadata::None)
     }
 
+    /// Fills `output` with the JSON array paths associated to the current doc/term positions.
+    ///
+    /// Returns `true` if metadata was found for the given `doc_id`/`doc_ord`, `false` otherwise.
     pub fn fill_doc_json_metadata_refs(
         &mut self,
         doc_id: DocId,

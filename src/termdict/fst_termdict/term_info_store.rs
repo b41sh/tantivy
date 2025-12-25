@@ -93,6 +93,7 @@ impl TermInfoBlockMeta {
     }
 }
 
+/// Compact store for term infos, organized in fixed-size blocks with bitpacked deltas.
 #[derive(Clone)]
 pub struct TermInfoStore {
     num_terms: usize,
@@ -122,6 +123,7 @@ fn extract_bits(data: &[u8], addr_bits: usize, num_bits: u8) -> u64 {
 }
 
 impl TermInfoStore {
+    /// Opens a term info store from disk slices (block metadata + bitpacked bodies).
     pub fn open(term_info_store_file: FileSlice) -> io::Result<TermInfoStore> {
         let (len_slice, main_slice) = term_info_store_file.split(16);
         let mut bytes = len_slice.read_bytes()?;
@@ -136,6 +138,7 @@ impl TermInfoStore {
         })
     }
 
+    /// Returns the `TermInfo` for the given term ordinal.
     pub fn get(&self, term_ord: TermOrdinal) -> TermInfo {
         let block_id = (term_ord as usize) / BLOCK_LEN;
         let buffer = self.block_meta_bytes.as_slice();
@@ -153,6 +156,7 @@ impl TermInfoStore {
         )
     }
 
+    /// Number of terms stored.
     pub fn num_terms(&self) -> usize {
         self.num_terms
     }

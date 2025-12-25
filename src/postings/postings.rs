@@ -1,3 +1,7 @@
+use std::sync::Arc;
+
+use common::json_path_writer::JsonArrayPathEntry;
+
 use crate::docset::DocSet;
 
 /// Postings (also called inverted list)
@@ -31,6 +35,11 @@ pub trait Postings: DocSet + 'static {
     fn positions(&mut self, output: &mut Vec<u32>) {
         self.positions_with_offset(0u32, output);
     }
+
+    /// Returns the JSON array path stacks for the current document if available.
+    fn json_array_paths(&mut self) -> Option<&[Arc<[JsonArrayPathEntry]>]> {
+        None
+    }
 }
 
 impl Postings for Box<dyn Postings> {
@@ -40,5 +49,9 @@ impl Postings for Box<dyn Postings> {
 
     fn append_positions_with_offset(&mut self, offset: u32, output: &mut Vec<u32>) {
         (**self).append_positions_with_offset(offset, output);
+    }
+
+    fn json_array_paths(&mut self) -> Option<&[Arc<[JsonArrayPathEntry]>]> {
+        (**self).json_array_paths()
     }
 }

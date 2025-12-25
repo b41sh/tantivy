@@ -1,7 +1,9 @@
 use std::cmp::Ordering;
 use std::io::{self, Write};
 
-use common::{BinarySerializable, CountingWriter, VInt};
+use common::json_path_writer::JsonArrayPathEntry;
+use common::{write_u32_vint, BinarySerializable, CountingWriter, VInt};
+use rustc_hash::FxHashMap;
 
 use super::TermInfo;
 use crate::directory::{CompositeWrite, WritePtr};
@@ -108,6 +110,8 @@ pub struct FieldSerializer<'a> {
     positions_serializer_opt: Option<PositionSerializer<&'a mut CountingWriter<WritePtr>>>,
     current_term_info: TermInfo,
     term_open: bool,
+    json_metadata: Option<JsonTermMetadataBuilder>,
+    json_path_table: Option<JsonPathTableBuilder>,
 }
 
 impl<'a> FieldSerializer<'a> {
@@ -140,12 +144,18 @@ impl<'a> FieldSerializer<'a> {
             None
         };
 
+        let supports_json =
+            matches!(field_type, FieldType::JsonObject(_)) && index_record_option.has_positions();
+        let json_metadata = supports_json.then(JsonTermMetadataBuilder::default);
+        let json_path_table = supports_json.then(JsonPathTableBuilder::new);
         Ok(FieldSerializer {
             term_dictionary_builder,
             postings_serializer,
             positions_serializer_opt,
             current_term_info: TermInfo::default(),
             term_open: false,
+            json_metadata,
+            json_path_table,
         })
     }
 
@@ -205,6 +215,27 @@ impl<'a> FieldSerializer<'a> {
         }
     }
 
+    /// Writes a document for the current term, attaching per-position JSON path metadata.
+    ///
+    /// `metadata` must be aligned with `position_deltas`: one path per position. If the
+    /// field/codec does not support JSON metadata, `metadata` is expected to be empty.
+    pub fn write_doc_with_json_metadata(
+        &mut self,
+        doc_id: DocId,
+        term_freq: u32,
+        position_deltas: &[u32],
+        metadata: &[Vec<JsonArrayPathEntry>],
+    ) {
+        self.write_doc(doc_id, term_freq, position_deltas);
+        if let (Some(builder), Some(path_table)) =
+            (self.json_metadata.as_mut(), self.json_path_table.as_mut())
+        {
+            builder.add_doc(metadata, path_table);
+        } else {
+            debug_assert!(metadata.is_empty());
+        }
+    }
+
     /// Finish the serialization for this term postings.
     ///
     /// If the current block is incomplete, it needs to be encoded
@@ -221,6 +252,11 @@ impl<'a> FieldSerializer<'a> {
 
             if let Some(positions_serializer) = self.positions_serializer_opt.as_mut() {
                 positions_serializer.close_term()?;
+                if let Some(builder) = self.json_metadata.as_mut() {
+                    if let Some(encoded_metadata) = builder.take_encoded_metadata() {
+                        positions_serializer.append_json_metadata(&encoded_metadata)?;
+                    }
+                }
                 self.current_term_info.positions_range.end =
                     positions_serializer.written_bytes() as usize;
             }
@@ -234,12 +270,140 @@ impl<'a> FieldSerializer<'a> {
     /// Closes the current field.
     pub fn close(mut self) -> io::Result<()> {
         self.close_term()?;
+        if let Some(positions_serializer) = self.positions_serializer_opt.as_mut() {
+            if let Some(path_table) = self.json_path_table.take() {
+                let paths = path_table.finalize();
+                positions_serializer.append_json_path_table(&paths)?;
+            }
+        }
         if let Some(positions_serializer) = self.positions_serializer_opt {
             positions_serializer.close()?;
         }
         self.postings_serializer.close()?;
         self.term_dictionary_builder.finish()?;
         Ok(())
+    }
+}
+
+#[derive(Default)]
+struct JsonPathTableBuilder {
+    paths: FxHashMap<Vec<JsonArrayPathEntry>, u32>,
+}
+
+impl JsonPathTableBuilder {
+    /// Tracks distinct JSON array paths encountered in the field and assigns stable ids.
+    fn new() -> Self {
+        JsonPathTableBuilder {
+            paths: FxHashMap::default(),
+        }
+    }
+
+    fn get_or_insert_id(&mut self, path: &[JsonArrayPathEntry]) -> u32 {
+        if path.is_empty() {
+            return 0u32;
+        }
+        let next_index = (self.paths.len() + 1) as u32;
+        *self.paths.entry(path.to_vec()).or_insert(next_index)
+    }
+
+    fn finalize(self) -> Vec<Vec<JsonArrayPathEntry>> {
+        if self.paths.is_empty() {
+            return vec![Vec::new()];
+        }
+        let mut table = vec![Vec::new(); self.paths.len() + 1];
+        for (path, idx) in self.paths {
+            table[idx as usize] = path;
+        }
+        table
+    }
+}
+
+#[derive(Default)]
+struct JsonTermMetadataBuilder {
+    doc_entries: Vec<Vec<u32>>,
+    has_non_empty_entry: bool,
+    block_encoder: BlockEncoder,
+}
+
+impl JsonTermMetadataBuilder {
+    /// Record the set of path ids for a single document occurrence of the term.
+    fn add_doc(
+        &mut self,
+        metadata: &[Vec<JsonArrayPathEntry>],
+        path_table: &mut JsonPathTableBuilder,
+    ) {
+        let mut indexes = Vec::with_capacity(metadata.len());
+        for json_array_path in metadata {
+            let index = path_table.get_or_insert_id(json_array_path);
+            if index == 0 {
+                continue;
+            }
+            indexes.push(index);
+        }
+        if !indexes.is_empty() {
+            self.has_non_empty_entry = true;
+        }
+        self.doc_entries.push(indexes);
+    }
+
+    fn take_encoded_metadata(&mut self) -> Option<Vec<u8>> {
+        if self.doc_entries.is_empty() || !self.has_non_empty_entry {
+            self.doc_entries.clear();
+            self.has_non_empty_entry = false;
+            return None;
+        }
+        let num_docs = self.doc_entries.len();
+
+        let counts: Vec<u32> = self
+            .doc_entries
+            .iter()
+            .map(|indexes| indexes.len() as u32)
+            .collect();
+        if counts.iter().all(|count| *count == 0) {
+            self.doc_entries.clear();
+            self.has_non_empty_entry = false;
+            return None;
+        }
+
+        let mut bytes = Vec::new();
+        // version marker to differentiate encoding.
+        write_u32_vint(1, &mut bytes).expect("writing to Vec cannot fail");
+
+        write_u32_vint(num_docs as u32, &mut bytes).expect("writing to Vec cannot fail");
+
+        Self::encode_bitpacked(&counts, &mut bytes, &mut self.block_encoder);
+
+        let total_indexes: u32 = counts.iter().copied().sum();
+        write_u32_vint(total_indexes, &mut bytes).expect("writing to Vec cannot fail");
+
+        let mut flat_indexes = Vec::with_capacity(total_indexes as usize);
+        for indexes in &self.doc_entries {
+            flat_indexes.extend(indexes.iter().copied());
+        }
+        Self::encode_bitpacked(&flat_indexes, &mut bytes, &mut self.block_encoder);
+
+        self.doc_entries.clear();
+        self.has_non_empty_entry = false;
+        Some(bytes)
+    }
+
+    fn encode_bitpacked(values: &[u32], bytes: &mut Vec<u8>, block_encoder: &mut BlockEncoder) {
+        let num_blocks = values.len() / COMPRESSION_BLOCK_SIZE;
+        write_u32_vint(num_blocks as u32, bytes).expect("writing to Vec cannot fail");
+        let mut bit_widths = Vec::with_capacity(num_blocks);
+        let mut block_bytes = Vec::with_capacity(num_blocks * COMPRESSION_BLOCK_SIZE);
+        for block in values.chunks_exact(COMPRESSION_BLOCK_SIZE) {
+            let (bit_width, encoded) = block_encoder.compress_block_unsorted(block, false);
+            bit_widths.push(bit_width);
+            block_bytes.extend_from_slice(encoded);
+        }
+        bytes.extend_from_slice(&bit_widths);
+        bytes.extend_from_slice(&block_bytes);
+
+        let remainder = values.chunks_exact(COMPRESSION_BLOCK_SIZE).remainder();
+        for &val in remainder {
+            write_u32_vint(val, bytes).expect("writing to Vec cannot fail");
+        }
     }
 }
 

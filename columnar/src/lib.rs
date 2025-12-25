@@ -17,8 +17,6 @@
 //!       column.
 //!     - [column_values]: Stores the values of a column in a dense format.
 
-#![feature(let_chains)]
-
 #[cfg(test)]
 #[macro_use]
 extern crate more_asserts;

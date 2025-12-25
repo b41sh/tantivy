@@ -4,6 +4,7 @@ use crate::index::SegmentReader;
 use crate::postings::SegmentPostings;
 use crate::query::bm25::Bm25Weight;
 use crate::query::explanation::does_not_match;
+use crate::query::term_query::JsonConstraintKey;
 use crate::query::{EmptyScorer, Explanation, Scorer, Weight};
 use crate::schema::{IndexRecordOption, Term};
 use crate::{DocId, DocSet, Score};
@@ -12,6 +13,7 @@ pub struct PhraseWeight {
     phrase_terms: Vec<(usize, Term)>,
     similarity_weight_opt: Option<Bm25Weight>,
     slop: u32,
+    json_constraint_key: Option<JsonConstraintKey>,
 }
 
 impl PhraseWeight {
@@ -22,10 +24,12 @@ impl PhraseWeight {
         similarity_weight_opt: Option<Bm25Weight>,
     ) -> PhraseWeight {
         let slop = 0;
+        let json_constraint_key = compute_json_constraint_key(&phrase_terms);
         PhraseWeight {
             phrase_terms,
             similarity_weight_opt,
             slop,
+            json_constraint_key,
         }
     }
 
@@ -65,12 +69,25 @@ impl PhraseWeight {
             similarity_weight_opt,
             fieldnorm_reader,
             self.slop,
+            self.json_constraint_key.clone(),
         )))
     }
 
     pub fn slop(&mut self, slop: u32) {
         self.slop = slop;
     }
+}
+
+fn compute_json_constraint_key(terms: &[(usize, Term)]) -> Option<JsonConstraintKey> {
+    let (_, first_term) = terms.first()?;
+    let first_key = JsonConstraintKey::from_term(first_term)?;
+    for (_, term) in terms.iter().skip(1) {
+        let other = JsonConstraintKey::from_term(term)?;
+        if other != first_key {
+            return None;
+        }
+    }
+    Some(first_key)
 }
 
 impl Weight for PhraseWeight {

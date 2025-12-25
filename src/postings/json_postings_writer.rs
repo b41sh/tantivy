@@ -1,6 +1,6 @@
 use std::io;
 
-use common::json_path_writer::JSON_END_OF_PATH;
+use common::json_path_writer::{JsonArrayPathEntry, JSON_END_OF_PATH};
 use stacker::Addr;
 
 use crate::indexer::indexing_term::IndexingTerm;
@@ -35,9 +35,11 @@ impl<Rec: Recorder> PostingsWriter for JsonPostingsWriter<Rec> {
         doc: crate::DocId,
         pos: u32,
         term: &IndexingTerm,
+        array_path: &[JsonArrayPathEntry],
         ctx: &mut IndexingContext,
     ) {
-        self.non_str_posting_writer.subscribe(doc, pos, term, ctx);
+        self.non_str_posting_writer
+            .subscribe(doc, pos, term, array_path, ctx);
     }
 
     fn index_text(
@@ -47,6 +49,7 @@ impl<Rec: Recorder> PostingsWriter for JsonPostingsWriter<Rec> {
         term_buffer: &mut IndexingTerm,
         ctx: &mut IndexingContext,
         indexing_position: &mut IndexingPosition,
+        array_path: &[JsonArrayPathEntry],
     ) {
         self.str_posting_writer.index_text(
             doc_id,
@@ -54,6 +57,7 @@ impl<Rec: Recorder> PostingsWriter for JsonPostingsWriter<Rec> {
             term_buffer,
             ctx,
             indexing_position,
+            array_path,
         );
     }
 

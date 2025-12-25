@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::docset::COLLECT_BLOCK_BUFFER_LEN;
+use crate::docset::{DocSet, COLLECT_BLOCK_BUFFER_LEN};
 use crate::index::SegmentReader;
 use crate::postings::FreqReadingOption;
 use crate::query::disjunction::Disjunction;

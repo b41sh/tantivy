@@ -1,3 +1,4 @@
+use common::json_path_writer::JsonArrayPathEntry;
 use common::read_u32_vint;
 use stacker::{ExpUnrolledLinkedList, MemoryArena};
 
@@ -63,7 +64,12 @@ pub(crate) trait Recorder: Copy + Default + Send + Sync + 'static {
     fn new_doc(&mut self, doc: DocId, arena: &mut MemoryArena);
     /// Record the position of a term. For each document,
     /// this method will be called `term_freq` times.
-    fn record_position(&mut self, position: u32, arena: &mut MemoryArena);
+    fn record_position(
+        &mut self,
+        position: u32,
+        array_path: &[JsonArrayPathEntry],
+        arena: &mut MemoryArena,
+    );
     /// Close the document. It will help record the term frequency.
     fn close_doc(&mut self, arena: &mut MemoryArena);
     /// Pushes the postings information to the serializer.
@@ -105,7 +111,13 @@ impl Recorder for DocIdRecorder {
     }
 
     #[inline]
-    fn record_position(&mut self, _position: u32, _arena: &mut MemoryArena) {}
+    fn record_position(
+        &mut self,
+        _position: u32,
+        _array_path: &[JsonArrayPathEntry],
+        _arena: &mut MemoryArena,
+    ) {
+    }
 
     #[inline]
     fn close_doc(&mut self, _arena: &mut MemoryArena) {}
@@ -167,7 +179,12 @@ impl Recorder for TermFrequencyRecorder {
     }
 
     #[inline]
-    fn record_position(&mut self, _position: u32, _arena: &mut MemoryArena) {
+    fn record_position(
+        &mut self,
+        _position: u32,
+        _array_path: &[JsonArrayPathEntry],
+        _arena: &mut MemoryArena,
+    ) {
         self.current_tf += 1;
     }
 
@@ -224,7 +241,12 @@ impl Recorder for TfAndPositionRecorder {
     }
 
     #[inline]
-    fn record_position(&mut self, position: u32, arena: &mut MemoryArena) {
+    fn record_position(
+        &mut self,
+        position: u32,
+        _array_path: &[JsonArrayPathEntry],
+        arena: &mut MemoryArena,
+    ) {
         self.stack
             .writer(arena)
             .write_u32_vint(position.wrapping_add(1u32));
@@ -263,6 +285,122 @@ impl Recorder for TfAndPositionRecorder {
                 }
             }
             serializer.write_doc(doc_id, buffer_positions.len() as u32, buffer_positions);
+        }
+    }
+
+    fn term_doc_freq(&self) -> Option<u32> {
+        Some(self.term_doc_freq)
+    }
+}
+
+/// Recorder encoding term frequencies, positions, and JSON array metadata.
+#[derive(Clone, Copy, Default)]
+pub struct JsonPositionsRecorder {
+    position_stack: ExpUnrolledLinkedList,
+    metadata_stack: ExpUnrolledLinkedList,
+    current_doc: DocId,
+    term_doc_freq: u32,
+}
+
+impl Recorder for JsonPositionsRecorder {
+    #[inline]
+    fn current_doc(&self) -> DocId {
+        self.current_doc
+    }
+
+    #[inline]
+    fn new_doc(&mut self, doc: DocId, arena: &mut MemoryArena) {
+        let delta = doc - self.current_doc;
+        self.current_doc = doc;
+        self.term_doc_freq += 1u32;
+        self.position_stack.writer(arena).write_u32_vint(delta);
+    }
+
+    #[inline]
+    fn record_position(
+        &mut self,
+        position: u32,
+        array_path: &[JsonArrayPathEntry],
+        arena: &mut MemoryArena,
+    ) {
+        self.position_stack
+            .writer(arena)
+            .write_u32_vint(position.wrapping_add(1u32));
+        let mut metadata_writer = self.metadata_stack.writer(arena);
+        // Store the JSON path (depth + entries) alongside the position so we can
+        // later associate positions back to their array element.
+        metadata_writer.write_u32_vint(array_path.len() as u32);
+        for entry in array_path {
+            metadata_writer.write_u32_vint(entry.path_id);
+            metadata_writer.write_u32_vint(entry.element_ord);
+        }
+    }
+
+    #[inline]
+    fn close_doc(&mut self, arena: &mut MemoryArena) {
+        self.position_stack
+            .writer(arena)
+            .write_u32_vint(POSITION_END);
+    }
+
+    fn serialize(
+        &self,
+        arena: &MemoryArena,
+        serializer: &mut FieldSerializer<'_>,
+        buffer_lender: &mut BufferLender,
+    ) {
+        let (buffer_u8, buffer_positions) = buffer_lender.lend_all();
+        self.position_stack.read_to_end(arena, buffer_u8);
+        let mut position_it = VInt32Reader::new(&buffer_u8[..]);
+        let mut prev_doc = 0;
+        let mut metadata_bytes = Vec::new();
+        self.metadata_stack.read_to_end(arena, &mut metadata_bytes);
+        let mut metadata_it = VInt32Reader::new(&metadata_bytes[..]);
+        let mut doc_paths: Vec<Vec<JsonArrayPathEntry>> = Vec::new();
+        while let Some(delta_doc_id) = position_it.next() {
+            let doc_id = prev_doc + delta_doc_id;
+            prev_doc = doc_id;
+            let mut prev_position_plus_one = 1u32;
+            buffer_positions.clear();
+            let mut position_number = 0;
+            loop {
+                match position_it.next() {
+                    Some(POSITION_END) | None => {
+                        break;
+                    }
+                    Some(position_plus_one) => {
+                        position_number += 1;
+                        let delta_position = position_plus_one - prev_position_plus_one;
+                        buffer_positions.push(delta_position);
+                        prev_position_plus_one = position_plus_one;
+                    }
+                }
+            }
+
+            doc_paths.clear();
+            for _ in 0..position_number {
+                let depth = metadata_it.next().unwrap_or(0);
+                if depth == 0 {
+                    doc_paths.push(vec![]);
+                    continue;
+                }
+                let mut path = Vec::with_capacity(depth as usize);
+                for _ in 0..depth {
+                    let path_id = metadata_it.next().unwrap_or(0);
+                    let ordinal = metadata_it.next().unwrap_or(0);
+                    path.push(JsonArrayPathEntry {
+                        path_id,
+                        element_ord: ordinal,
+                    });
+                }
+                doc_paths.push(path);
+            }
+            serializer.write_doc_with_json_metadata(
+                doc_id,
+                buffer_positions.len() as u32,
+                buffer_positions,
+                &doc_paths,
+            );
         }
     }
 

@@ -7,7 +7,7 @@ use crate::query::bm25::Bm25Weight;
 use crate::query::explanation::does_not_match;
 use crate::query::weight::{for_each_docset_buffered, for_each_scorer};
 use crate::query::{AllScorer, AllWeight, EmptyScorer, Explanation, Scorer, Weight};
-use crate::schema::IndexRecordOption;
+use crate::schema::{IndexRecordOption, Type};
 use crate::{DocId, Score, TantivyError, Term};
 
 pub struct TermWeight {
@@ -190,7 +190,12 @@ impl TermWeight {
 
         // If we don't care about scores, and our posting lists matches all doc, we can return the
         // AllMatch scorer.
-        if !self.scoring_enabled && term_info.doc_freq == reader.max_doc() {
+        // JSON terms expose additional per-doc metadata; keep the actual postings scorer even
+        // when they match every document so JsonQuery can enforce path constraints.
+        if !self.scoring_enabled
+            && term_info.doc_freq == reader.max_doc()
+            && self.term.typ() != Type::Json
+        {
             return Ok(TermOrEmptyOrAllScorer::AllMatch(AllScorer::new(
                 reader.max_doc(),
             )));

@@ -98,6 +98,10 @@
 //! make it possible to access the value given the doc id rapidly. This is useful if the value
 //! of the field is required during scoring or collection for instance.
 //!
+//! Some queries may leverage Fast fields when run on a field that is not indexed. This can be
+//! handy if that kind of request is infrequent, however note that searching on a Fast field is
+//! generally much slower than searching in an index.
+//!
 //! ```
 //! use tantivy::schema::*;
 //! let mut schema_builder = Schema::builder();
@@ -116,6 +120,7 @@ mod field_entry;
 mod field_type;
 
 mod bytes_options;
+mod custom_options;
 mod date_time_options;
 mod field;
 mod flags;
@@ -129,6 +134,7 @@ mod text_options;
 use columnar::ColumnType;
 
 pub use self::bytes_options::BytesOptions;
+pub use self::custom_options::CustomOptions;
 pub use self::date_time_options::{DateOptions, DateTimePrecision, DATE_TIME_PRECISION_INDEXED};
 pub use self::document::{DocParsingError, Document, OwnedValue, TantivyDocument, Value};
 pub(crate) use self::facet::FACET_SEP_BYTE;
@@ -168,6 +174,7 @@ pub(crate) fn value_type_to_column_type(typ: Type) -> Option<ColumnType> {
         Type::Bytes => Some(ColumnType::Bytes),
         Type::IpAddr => Some(ColumnType::IpAddr),
         Type::Json => None,
+        Type::Custom => None,
     }
 }
 

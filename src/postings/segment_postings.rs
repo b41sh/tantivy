@@ -77,13 +77,13 @@ impl SegmentPostings {
         let mut buffer = Vec::new();
         {
             let mut postings_serializer =
-                PostingsSerializer::new(&mut buffer, 0.0, IndexRecordOption::Basic, None);
+                PostingsSerializer::new(0.0, IndexRecordOption::Basic, None);
             postings_serializer.new_term(docs.len() as u32, false);
             for &doc in docs {
                 postings_serializer.write_doc(doc, 1u32);
             }
             postings_serializer
-                .close_term(docs.len() as u32)
+                .close_term(docs.len() as u32, &mut buffer)
                 .expect("In memory Serialization should never fail.");
         }
         let block_segment_postings = BlockSegmentPostings::open(
@@ -122,7 +122,6 @@ impl SegmentPostings {
             })
             .unwrap_or(0.0);
         let mut postings_serializer = PostingsSerializer::new(
-            &mut buffer,
             average_field_norm,
             IndexRecordOption::WithFreqs,
             fieldnorm_reader,
@@ -132,7 +131,7 @@ impl SegmentPostings {
             postings_serializer.write_doc(doc, tf);
         }
         postings_serializer
-            .close_term(doc_and_tfs.len() as u32)
+            .close_term(doc_and_tfs.len() as u32, &mut buffer)
             .unwrap();
         let block_segment_postings = BlockSegmentPostings::open(
             doc_and_tfs.len() as u32,
@@ -183,8 +182,16 @@ impl DocSet for SegmentPostings {
         self.doc()
     }
 
+    #[inline]
     fn seek(&mut self, target: DocId) -> DocId {
         debug_assert!(self.doc() <= target);
+        if self.doc() >= target {
+            return self.doc();
+        }
+
+        // As an optimization, if the block is already loaded, we can
+        // cheaply check the next doc.
+        self.cur = (self.cur + 1).min(COMPRESSION_BLOCK_SIZE - 1);
         if self.doc() >= target {
             return self.doc();
         }

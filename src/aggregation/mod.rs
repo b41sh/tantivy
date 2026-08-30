@@ -133,7 +133,7 @@ mod agg_limits;
 pub mod agg_req;
 pub mod agg_result;
 pub mod bucket;
-mod buf_collector;
+pub(crate) mod buffered_sub_aggs;
 mod collector;
 mod date;
 mod error;
@@ -161,6 +161,19 @@ use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::tokenizer::TokenizerManager;
+
+/// A bucket id is a dense identifier for a bucket within an aggregation.
+/// It is used to index into a Vec that hold per-bucket data.
+///
+/// For example, in a terms aggregation, each unique term will be assigned a incremental BucketId.
+/// This BucketId will be forwarded to sub-aggregations to identify the parent bucket.
+///
+/// This allows to have a single AggregationCollector instance per aggregation,
+/// that can handle multiple buckets efficiently.
+///
+/// The API to call sub-aggregations is therefore a &[(BucketId, &[DocId])].
+/// For that we'll need a buffer. One Vec per bucket aggregation is needed.
+pub type BucketId = u32;
 
 /// Context parameters for aggregation execution
 ///
@@ -335,19 +348,37 @@ impl Display for Key {
     }
 }
 
+pub(crate) fn convert_to_f64<const COLUMN_TYPE_ID: u8>(val: u64) -> f64 {
+    if COLUMN_TYPE_ID == ColumnType::U64 as u8 {
+        val as f64
+    } else if COLUMN_TYPE_ID == ColumnType::I64 as u8
+        || COLUMN_TYPE_ID == ColumnType::DateTime as u8
+    {
+        i64::from_u64(val) as f64
+    } else if COLUMN_TYPE_ID == ColumnType::F64 as u8 {
+        f64::from_u64(val)
+    } else if COLUMN_TYPE_ID == ColumnType::Bool as u8 {
+        val as f64
+    } else {
+        panic!(
+            "ColumnType ID {} cannot be converted to f64 metric",
+            COLUMN_TYPE_ID
+        )
+    }
+}
+
 /// Inverse of `to_fastfield_u64`. Used to convert to `f64` for metrics.
 ///
 /// # Panics
 /// Only `u64`, `f64`, `date`, and `i64` are supported.
-pub(crate) fn f64_from_fastfield_u64(val: u64, field_type: &ColumnType) -> f64 {
+pub(crate) fn f64_from_fastfield_u64(val: u64, field_type: ColumnType) -> f64 {
     match field_type {
-        ColumnType::U64 => val as f64,
-        ColumnType::I64 | ColumnType::DateTime => i64::from_u64(val) as f64,
-        ColumnType::F64 => f64::from_u64(val),
-        ColumnType::Bool => val as f64,
-        _ => {
-            panic!("unexpected type {field_type:?}. This should not happen")
-        }
+        ColumnType::U64 => convert_to_f64::<{ ColumnType::U64 as u8 }>(val),
+        ColumnType::I64 => convert_to_f64::<{ ColumnType::I64 as u8 }>(val),
+        ColumnType::F64 => convert_to_f64::<{ ColumnType::F64 as u8 }>(val),
+        ColumnType::Bool => convert_to_f64::<{ ColumnType::Bool as u8 }>(val),
+        ColumnType::DateTime => convert_to_f64::<{ ColumnType::DateTime as u8 }>(val),
+        _ => panic!("unexpected type {field_type:?}. This should not happen"),
     }
 }
 
@@ -383,6 +414,7 @@ mod tests {
     use crate::indexer::NoMergePolicy;
     use crate::query::{AllQuery, TermQuery};
     use crate::schema::{IndexRecordOption, Schema, TextFieldIndexing, FAST, STRING};
+    use crate::tokenizer::RAW_TOKENIZER_NAME;
     use crate::{Index, IndexWriter, Term};
 
     pub fn get_test_index_with_num_docs(
@@ -478,7 +510,7 @@ mod tests {
                     .set_index_option(IndexRecordOption::Basic)
                     .set_fieldnorms(false),
             )
-            .set_fast(None)
+            .set_fast(RAW_TOKENIZER_NAME)
             .set_stored();
         let text_field = schema_builder.add_text_field("text", text_fieldtype.clone());
         let text_field_id = schema_builder.add_text_field("text_id", text_fieldtype);
@@ -533,7 +565,7 @@ mod tests {
             .set_indexing_options(
                 TextFieldIndexing::default().set_index_option(IndexRecordOption::WithFreqs),
             )
-            .set_fast(Some("raw"))
+            .set_fast(RAW_TOKENIZER_NAME)
             .set_stored();
         let text_field = schema_builder.add_text_field("text", text_fieldtype);
         let date_field = schema_builder.add_date_field("date", FAST);

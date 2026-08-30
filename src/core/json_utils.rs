@@ -230,8 +230,12 @@ pub(crate) fn index_json_value<'a, V: Value<'a>>(
                 ReferenceValueLeaf::IpAddr(_) => {
                     unimplemented!("IP address support in dynamic fields is not yet implemented")
                 }
+                ReferenceValueLeaf::Custom(_) => {
+                    unimplemented!("the JSON field does not support custom field types")
+                }
             }
         }
+
         ReferenceValue::Array(elements) => {
             let path_id = ctx
                 .path_to_unordered_id

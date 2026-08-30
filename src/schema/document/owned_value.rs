@@ -49,12 +49,40 @@ pub enum OwnedValue {
     Object(Vec<(String, Self)>),
     /// IpV6 Address. Internally there is no IpV4, it needs to be converted to `Ipv6Addr`.
     IpAddr(Ipv6Addr),
+    /// Opaque payload of a plugin-defined custom field.
+    Custom(Vec<u8>),
 }
 
 impl AsRef<OwnedValue> for OwnedValue {
     #[inline]
     fn as_ref(&self) -> &OwnedValue {
         self
+    }
+}
+
+impl OwnedValue {
+    /// Returns a u8 discriminant value for the `OwnedValue` variant.
+    ///
+    /// This can be used to sort `OwnedValue` instances by their type.
+    pub fn discriminant_value(&self) -> u8 {
+        match self {
+            OwnedValue::Null => 0,
+            OwnedValue::Str(_) => 1,
+            OwnedValue::PreTokStr(_) => 2,
+            // It is key to make sure U64, I64, F64 are grouped together in there, otherwise we
+            // might be breaking transivity.
+            OwnedValue::U64(_) => 3,
+            OwnedValue::I64(_) => 4,
+            OwnedValue::F64(_) => 5,
+            OwnedValue::Bool(_) => 6,
+            OwnedValue::Date(_) => 7,
+            OwnedValue::Facet(_) => 8,
+            OwnedValue::Bytes(_) => 9,
+            OwnedValue::Array(_) => 10,
+            OwnedValue::Object(_) => 11,
+            OwnedValue::IpAddr(_) => 12,
+            OwnedValue::Custom(_) => 13,
+        }
     }
 }
 
@@ -75,6 +103,7 @@ impl<'a> Value<'a> for &'a OwnedValue {
             OwnedValue::Facet(val) => ReferenceValueLeaf::Facet(val.encoded_str()).into(),
             OwnedValue::Bytes(val) => ReferenceValueLeaf::Bytes(val).into(),
             OwnedValue::IpAddr(val) => ReferenceValueLeaf::IpAddr(*val).into(),
+            OwnedValue::Custom(val) => ReferenceValueLeaf::Custom(val).into(),
             OwnedValue::Array(array) => ReferenceValue::Array(array.iter()),
             OwnedValue::Object(object) => ReferenceValue::Object(ObjectMapIter(object.iter())),
         }
@@ -198,6 +227,10 @@ impl serde::Serialize for OwnedValue {
                 }
             }
             OwnedValue::Array(ref array) => array.serialize(serializer),
+            // Custom payloads are opaque; render them as base64 for display/debug. They never
+            // round-trip through serde (they are populated programmatically), so this is lossy
+            // by design.
+            OwnedValue::Custom(ref bytes) => serializer.serialize_str(&BASE64.encode(bytes)),
         }
     }
 }
@@ -285,6 +318,7 @@ impl<'a, V: Value<'a>> From<ReferenceValue<'a, V>> for OwnedValue {
                 ReferenceValueLeaf::IpAddr(val) => OwnedValue::IpAddr(val),
                 ReferenceValueLeaf::Bool(val) => OwnedValue::Bool(val),
                 ReferenceValueLeaf::PreTokStr(val) => OwnedValue::PreTokStr(*val.clone()),
+                ReferenceValueLeaf::Custom(val) => OwnedValue::Custom(val.to_vec()),
             },
             ReferenceValue::Array(val) => {
                 OwnedValue::Array(val.map(|v| v.as_value().into()).collect())

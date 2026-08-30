@@ -1,5 +1,7 @@
 use std::borrow::{Borrow, BorrowMut};
 
+use common::TinySet;
+
 use crate::fastfield::AliveBitSet;
 use crate::DocId;
 
@@ -13,6 +15,12 @@ pub const TERMINATED: DocId = i32::MAX as u32;
 /// Passed results to `collect_block` will not exceed this size and will be
 /// exactly this size as long as we can fill the buffer.
 pub const COLLECT_BLOCK_BUFFER_LEN: usize = 64;
+
+/// Number of `TinySet` (64-bit) buckets in a block used by [`DocSet::fill_bitset_block`].
+pub const BLOCK_NUM_TINYBITSETS: usize = 16;
+
+/// Number of doc IDs covered by one block: `BLOCK_NUM_TINYBITSETS * 64 = 1024`.
+pub const BLOCK_WINDOW: u32 = BLOCK_NUM_TINYBITSETS as u32 * 64;
 
 /// Represents an iterable set of sorted doc ids.
 pub trait DocSet: Send {
@@ -40,6 +48,8 @@ pub trait DocSet: Send {
     /// of `DocSet` should support it.
     ///
     /// Calling `seek(TERMINATED)` is also legal and is the normal way to consume a `DocSet`.
+    ///
+    /// `target` has to be larger or equal to `.doc()` when calling `seek`.
     fn seek(&mut self, target: DocId) -> DocId {
         let mut doc = self.doc();
         debug_assert!(doc <= target);
@@ -47,6 +57,57 @@ pub trait DocSet: Send {
             doc = self.advance();
         }
         doc
+    }
+
+    /// !!!Dragons ahead!!!
+    /// In spirit, this is an approximate and dangerous version of `seek`.
+    ///
+    /// It can leave the DocSet in an `invalid` state and might return a
+    /// lower bound of what the result of Seek would have been.
+    ///
+    ///
+    /// More accurately it returns either:
+    /// - Found if the target is in the docset. In that case, the DocSet is left in a valid state.
+    /// - SeekLowerBound(seek_lower_bound) if the target is not in the docset. In that case, The
+    ///   DocSet can be the left in a invalid state. The DocSet should then only receives call to
+    ///   `seek_danger(..)` until it returns `Found`, and get back to a valid state.
+    ///
+    /// `seek_lower_bound` can be any `DocId` (in the docset or not) as long as it is in
+    /// `(target .. seek_result] U {TERMINATED}` where `seek_result` is the first document in the
+    /// docset greater than to `target`.
+    ///
+    /// `seek_danger` may return `SeekLowerBound(TERMINATED)`.
+    ///
+    /// Calling `seek_danger` with TERMINATED as a target is allowed,
+    /// and should always return NewTarget(TERMINATED) or anything larger as TERMINATED is NOT in
+    /// the DocSet.
+    ///
+    /// DocSets that already have an efficient `seek` method don't need to implement
+    /// `seek_danger`.
+    ///
+    /// Consecutive calls to seek_danger are guaranteed to have strictly increasing `target`
+    /// values.
+    fn seek_danger(&mut self, target: DocId) -> SeekDangerResult {
+        if target >= TERMINATED {
+            debug_assert!(target == TERMINATED);
+            // No need to advance.
+            return SeekDangerResult::SeekLowerBound(target);
+        }
+
+        // The default implementation does not include any
+        // `danger zone` behavior.
+        //
+        // It does not leave the scorer in an invalid state.
+        // For this reason, we can safely call `self.doc()`.
+        let mut doc = self.doc();
+        if doc < target {
+            doc = self.seek(target);
+        }
+        if doc == target {
+            SeekDangerResult::Found
+        } else {
+            SeekDangerResult::SeekLowerBound(doc)
+        }
     }
 
     /// Fills a given mutable buffer with the next doc ids from the
@@ -94,8 +155,42 @@ pub trait DocSet: Send {
     /// which would be the number of documents in the DocSet.
     ///
     /// By default this returns `size_hint()`.
+    ///
+    /// DocSets may have vastly different cost depending on their type,
+    /// e.g. an intersection with 10 hits is much cheaper than
+    /// a phrase search with 10 hits, since it needs to load positions.
+    ///
+    /// ### Future Work
+    /// We may want to differentiate `DocSet` costs more more granular, e.g.
+    /// creation_cost, advance_cost, seek_cost on to get a good estimation
+    /// what query types to choose.
     fn cost(&self) -> u64 {
         self.size_hint() as u64
+    }
+
+    /// Fills a bitmask representing which documents in `[min_doc, min_doc + BLOCK_WINDOW)` are
+    /// present in this docset.
+    ///
+    /// The window is divided into `BLOCK_NUM_TINYBITSETS` buckets of 64 docs each.
+    /// Returns the next doc `>= min_doc + BLOCK_WINDOW`, or `TERMINATED` if exhausted.
+    fn fill_bitset_block(
+        &mut self,
+        min_doc: DocId,
+        mask: &mut [TinySet; BLOCK_NUM_TINYBITSETS],
+    ) -> DocId {
+        self.seek(min_doc);
+        let horizon = min_doc + BLOCK_WINDOW;
+        loop {
+            let doc = self.doc();
+            if doc >= horizon {
+                return doc;
+            }
+            let delta = doc - min_doc;
+            mask[(delta / 64) as usize].insert_mut(delta % 64);
+            if self.advance() == TERMINATED {
+                return TERMINATED;
+            }
+        }
     }
 
     /// Returns the number documents matching.
@@ -128,6 +223,17 @@ pub trait DocSet: Send {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SeekDangerResult {
+    /// The target was found in the DocSet.
+    Found,
+    /// The target was not found in the DocSet.
+    /// We return a range in which the value could be.
+    /// The given target can be any DocId, that is <= than the first document
+    /// in the docset after the target.
+    SeekLowerBound(DocId),
+}
+
 impl DocSet for &mut dyn DocSet {
     fn advance(&mut self) -> u32 {
         (**self).advance()
@@ -135,6 +241,22 @@ impl DocSet for &mut dyn DocSet {
 
     fn seek(&mut self, target: DocId) -> DocId {
         (**self).seek(target)
+    }
+
+    fn seek_danger(&mut self, target: DocId) -> SeekDangerResult {
+        (**self).seek_danger(target)
+    }
+
+    fn fill_buffer(&mut self, buffer: &mut [DocId; COLLECT_BLOCK_BUFFER_LEN]) -> usize {
+        (**self).fill_buffer(buffer)
+    }
+
+    fn fill_bitset_block(
+        &mut self,
+        min_doc: DocId,
+        mask: &mut [TinySet; BLOCK_NUM_TINYBITSETS],
+    ) -> DocId {
+        (**self).fill_bitset_block(min_doc, mask)
     }
 
     fn doc(&self) -> u32 {
@@ -169,9 +291,23 @@ impl<TDocSet: DocSet + ?Sized> DocSet for Box<TDocSet> {
         unboxed.seek(target)
     }
 
+    fn seek_danger(&mut self, target: DocId) -> SeekDangerResult {
+        let unboxed: &mut TDocSet = self.borrow_mut();
+        unboxed.seek_danger(target)
+    }
+
     fn fill_buffer(&mut self, buffer: &mut [DocId; COLLECT_BLOCK_BUFFER_LEN]) -> usize {
         let unboxed: &mut TDocSet = self.borrow_mut();
         unboxed.fill_buffer(buffer)
+    }
+
+    fn fill_bitset_block(
+        &mut self,
+        min_doc: DocId,
+        mask: &mut [TinySet; BLOCK_NUM_TINYBITSETS],
+    ) -> DocId {
+        let unboxed: &mut TDocSet = self.borrow_mut();
+        unboxed.fill_bitset_block(min_doc, mask)
     }
 
     fn doc(&self) -> DocId {

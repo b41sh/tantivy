@@ -435,6 +435,7 @@ impl Recorder for JsonPositionsRecorder {
     fn serialize(
         &self,
         arena: &MemoryArena,
+        doc_id_map: Option<&DocIdMapping>,
         serializer: &mut FieldSerializer<'_>,
         buffer_lender: &mut BufferLender,
     ) {
@@ -446,6 +447,7 @@ impl Recorder for JsonPositionsRecorder {
         self.metadata_stack.read_to_end(arena, &mut metadata_bytes);
         let mut metadata_it = VInt32Reader::new(&metadata_bytes[..]);
         let mut doc_paths: Vec<Vec<JsonArrayPathEntry>> = Vec::new();
+        let mut docs = Vec::new();
         while let Some(delta_doc_id) = position_it.next() {
             let doc_id = prev_doc + delta_doc_id;
             prev_doc = doc_id;
@@ -484,11 +486,21 @@ impl Recorder for JsonPositionsRecorder {
                 }
                 doc_paths.push(path);
             }
+            docs.push((
+                doc_id_map.map_or(doc_id, |mapping| mapping.get_new_doc_id(doc_id)),
+                buffer_positions.clone(),
+                doc_paths.clone(),
+            ));
+        }
+        if doc_id_map.is_some() {
+            docs.sort_unstable_by_key(|(doc_id, _, _)| *doc_id);
+        }
+        for (doc_id, positions, paths) in docs {
             serializer.write_doc_with_json_metadata(
                 doc_id,
-                buffer_positions.len() as u32,
-                buffer_positions,
-                &doc_paths,
+                positions.len() as u32,
+                &positions,
+                &paths,
             );
         }
     }
@@ -561,8 +573,8 @@ mod tests {
 
         // Record one document with two term occurrences.
         rec.new_doc(0, &mut arena);
-        rec.record_position(0, &mut arena);
-        rec.record_position(1, &mut arena);
+        rec.record_position(0, &[], &mut arena);
+        rec.record_position(1, &[], &mut arena);
         rec.close_doc(&mut arena);
 
         assert_eq!(
@@ -581,7 +593,7 @@ mod tests {
         for (doc, tf) in [(0u32, 1u32), (5, 3), (10, 2)] {
             rec.new_doc(doc, &mut arena);
             for pos in 0..tf {
-                rec.record_position(pos, &mut arena);
+                rec.record_position(pos, &[], &mut arena);
             }
             rec.close_doc(&mut arena);
         }
@@ -611,7 +623,7 @@ mod tests {
         // Each document has exactly one occurrence — the minimum non-trivial case.
         for doc in [1u32, 2, 100] {
             rec.new_doc(doc, &mut arena);
-            rec.record_position(0, &mut arena);
+            rec.record_position(0, &[], &mut arena);
             rec.close_doc(&mut arena);
         }
 
@@ -626,7 +638,7 @@ mod tests {
         // A document where the term appears many times.
         rec.new_doc(42, &mut arena);
         for pos in 0..1000 {
-            rec.record_position(pos, &mut arena);
+            rec.record_position(pos, &[], &mut arena);
         }
         rec.close_doc(&mut arena);
 

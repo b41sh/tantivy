@@ -197,10 +197,6 @@ impl SkipReader {
         self.position_offset
     }
 
-    pub(crate) fn remaining_docs(&self) -> u32 {
-        self.remaining_docs
-    }
-
     #[inline]
     pub fn byte_offset(&self) -> usize {
         self.byte_offset

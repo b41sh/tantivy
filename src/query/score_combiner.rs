@@ -4,6 +4,15 @@ use crate::Score;
 /// The `ScoreCombiner` trait defines how to compute
 /// an overall score given a list of scores.
 pub trait ScoreCombiner: Default + Clone + Send + Copy + 'static {
+    /// Whether Block-WAND may drive this combiner.
+    ///
+    /// Block-WAND prunes blocks by comparing the *sum* of the per-term block
+    /// maxima against the threshold, and scores the surviving documents the
+    /// same way. That is only the right answer for a combiner that sums. A
+    /// combiner aggregating any other way (dis_max takes the maximum) has to
+    /// see every matching term, so it must not be pruned this way.
+    const SUPPORTS_BLOCK_WAND: bool = false;
+
     /// Aggregates the score combiner with the given scorer.
     ///
     /// The `ScoreCombiner` may decide to call `.scorer.score()`
@@ -29,6 +38,7 @@ impl ScoreCombiner for DoNothingCombiner {
 
     fn clear(&mut self) {}
 
+    #[inline]
     fn score(&self) -> Score {
         1.0
     }
@@ -41,6 +51,8 @@ pub struct SumCombiner {
 }
 
 impl ScoreCombiner for SumCombiner {
+    const SUPPORTS_BLOCK_WAND: bool = true;
+
     fn update<TScorer: Scorer>(&mut self, scorer: &mut TScorer) {
         self.score += scorer.score();
     }
@@ -49,6 +61,7 @@ impl ScoreCombiner for SumCombiner {
         self.score = 0.0;
     }
 
+    #[inline]
     fn score(&self) -> Score {
         self.score
     }
@@ -86,6 +99,7 @@ impl ScoreCombiner for DisjunctionMaxCombiner {
         self.sum = 0.0;
     }
 
+    #[inline]
     fn score(&self) -> Score {
         self.max + (self.sum - self.max) * self.tie_breaker
     }

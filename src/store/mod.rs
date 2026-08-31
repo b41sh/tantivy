@@ -33,11 +33,13 @@ mod compressors;
 mod decompressors;
 mod footer;
 mod index;
+pub mod plugin;
 mod reader;
 mod writer;
 
 pub use self::compressors::{Compressor, ZstdCompressor};
 pub use self::decompressors::Decompressor;
+pub use self::plugin::{StorePlugin, StorePluginWriter};
 pub use self::reader::{CacheStats, StoreReader};
 pub(crate) use self::reader::{DocStoreVersion, DOCSTORE_CACHE_CAPACITY};
 pub use self::writer::StoreWriter;
@@ -102,6 +104,7 @@ pub(crate) mod tests {
     }
 
     const NUM_DOCS: usize = 1_000;
+
     #[test]
     fn test_doc_store_iter_with_delete_bug_1077() -> crate::Result<()> {
         // this will cover deletion of the first element in a checkpoint
@@ -113,7 +116,7 @@ pub(crate) mod tests {
         let directory = RamDirectory::create();
         let store_wrt = directory.open_write(path)?;
         let schema =
-            write_lorem_ipsum_store(store_wrt, NUM_DOCS, Compressor::Lz4, BLOCK_SIZE, true);
+            write_lorem_ipsum_store(store_wrt, NUM_DOCS, Compressor::default(), BLOCK_SIZE, true);
         let field_title = schema.get_field("title").unwrap();
         let store_file = directory.open_read(path)?;
         let store = StoreReader::open(store_file, 10)?;

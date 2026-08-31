@@ -25,6 +25,8 @@ use columnar::MonotonicallyMappableToU64;
 pub use self::alive_bitset::{intersect_alive_bitsets, write_alive_bitset, AliveBitSet};
 pub use self::error::{FastFieldNotAvailableError, Result};
 pub use self::facet_reader::FacetReader;
+pub mod plugin;
+pub use self::plugin::{FastFieldsPlugin, FastFieldsPluginWriter};
 pub use self::readers::FastFieldReaders;
 pub use self::writer::FastFieldsWriter;
 use crate::schema::Type;
@@ -95,7 +97,9 @@ mod tests {
         TantivyDocument, TextOptions, FAST, INDEXED, STORED, STRING, TEXT,
     };
     use crate::time::OffsetDateTime;
-    use crate::tokenizer::{LowerCaser, RawTokenizer, TextAnalyzer, TokenizerManager};
+    use crate::tokenizer::{
+        LowerCaser, RawTokenizer, TextAnalyzer, TokenizerManager, RAW_TOKENIZER_NAME,
+    };
     use crate::{Index, IndexWriter, SegmentReader};
 
     pub static SCHEMA: Lazy<Schema> = Lazy::new(|| {
@@ -127,7 +131,7 @@ mod tests {
             fast_field_writers
                 .add_document(&doc!(*FIELD=>2u64))
                 .unwrap();
-            fast_field_writers.serialize(&mut write).unwrap();
+            fast_field_writers.serialize(&mut write, None).unwrap();
             write.terminate().unwrap();
         }
         let file = directory.open_read(path).unwrap();
@@ -178,7 +182,7 @@ mod tests {
             fast_field_writers
                 .add_document(&doc!(*FIELD=>215u64))
                 .unwrap();
-            fast_field_writers.serialize(&mut write).unwrap();
+            fast_field_writers.serialize(&mut write, None).unwrap();
             write.terminate().unwrap();
         }
         let file = directory.open_read(path).unwrap();
@@ -211,7 +215,7 @@ mod tests {
                     .add_document(&doc!(*FIELD=>100_000u64))
                     .unwrap();
             }
-            fast_field_writers.serialize(&mut write).unwrap();
+            fast_field_writers.serialize(&mut write, None).unwrap();
             write.terminate().unwrap();
         }
         let file = directory.open_read(path).unwrap();
@@ -243,7 +247,7 @@ mod tests {
                     .add_document(&doc!(*FIELD=>5_000_000_000_000_000_000u64 + doc_id))
                     .unwrap();
             }
-            fast_field_writers.serialize(&mut write).unwrap();
+            fast_field_writers.serialize(&mut write, None).unwrap();
             write.terminate().unwrap();
         }
         let file = directory.open_read(path).unwrap();
@@ -276,7 +280,7 @@ mod tests {
                 doc.add_i64(i64_field, i);
                 fast_field_writers.add_document(&doc).unwrap();
             }
-            fast_field_writers.serialize(&mut write).unwrap();
+            fast_field_writers.serialize(&mut write, None).unwrap();
             write.terminate().unwrap();
         }
         let file = directory.open_read(path).unwrap();
@@ -315,7 +319,7 @@ mod tests {
             let mut fast_field_writers = FastFieldsWriter::from_schema(&schema).unwrap();
             let doc = TantivyDocument::default();
             fast_field_writers.add_document(&doc).unwrap();
-            fast_field_writers.serialize(&mut write).unwrap();
+            fast_field_writers.serialize(&mut write, None).unwrap();
             write.terminate().unwrap();
         }
 
@@ -348,7 +352,7 @@ mod tests {
             let mut fast_field_writers = FastFieldsWriter::from_schema(&schema).unwrap();
             let doc = TantivyDocument::default();
             fast_field_writers.add_document(&doc).unwrap();
-            fast_field_writers.serialize(&mut write).unwrap();
+            fast_field_writers.serialize(&mut write, None).unwrap();
             write.terminate().unwrap();
         }
 
@@ -385,7 +389,7 @@ mod tests {
             for &x in &permutation {
                 fast_field_writers.add_document(&doc!(*FIELD=>x)).unwrap();
             }
-            fast_field_writers.serialize(&mut write).unwrap();
+            fast_field_writers.serialize(&mut write, None).unwrap();
             write.terminate().unwrap();
         }
         let file = directory.open_read(path).unwrap();
@@ -770,7 +774,7 @@ mod tests {
             fast_field_writers
                 .add_document(&doc!(field=>false))
                 .unwrap();
-            fast_field_writers.serialize(&mut write).unwrap();
+            fast_field_writers.serialize(&mut write, None).unwrap();
             write.terminate().unwrap();
         }
         let file = directory.open_read(path).unwrap();
@@ -802,7 +806,7 @@ mod tests {
                     .add_document(&doc!(field=>false))
                     .unwrap();
             }
-            fast_field_writers.serialize(&mut write).unwrap();
+            fast_field_writers.serialize(&mut write, None).unwrap();
             write.terminate().unwrap();
         }
         let file = directory.open_read(path).unwrap();
@@ -827,7 +831,7 @@ mod tests {
             let mut fast_field_writers = FastFieldsWriter::from_schema(&schema).unwrap();
             let doc = TantivyDocument::default();
             fast_field_writers.add_document(&doc).unwrap();
-            fast_field_writers.serialize(&mut write).unwrap();
+            fast_field_writers.serialize(&mut write, None).unwrap();
             write.terminate().unwrap();
         }
         let file = directory.open_read(path).unwrap();
@@ -855,7 +859,7 @@ mod tests {
             for doc in docs {
                 fast_field_writers.add_document(doc).unwrap();
             }
-            fast_field_writers.serialize(&mut write).unwrap();
+            fast_field_writers.serialize(&mut write, None).unwrap();
             write.terminate().unwrap();
         }
         Ok(directory)
@@ -879,7 +883,7 @@ mod tests {
         const ONE_HOUR_IN_MICROSECS: i64 = 3_600 * 1_000_000;
         let times: Vec<DateTime> = std::iter::repeat_with(|| {
             // +- One hour.
-            let t = T0 + rng.gen_range(-ONE_HOUR_IN_MICROSECS..ONE_HOUR_IN_MICROSECS);
+            let t = T0 + rng.random_range(-ONE_HOUR_IN_MICROSECS..ONE_HOUR_IN_MICROSECS);
             DateTime::from_timestamp_micros(t)
         })
         .take(1_000)
@@ -1087,7 +1091,7 @@ mod tests {
     #[test]
     fn test_fast_field_in_json_field_expand_dots_disabled() {
         let mut schema_builder = Schema::builder();
-        let json_option = JsonObjectOptions::default().set_fast(None);
+        let json_option = JsonObjectOptions::default().set_fast(RAW_TOKENIZER_NAME);
         let json = schema_builder.add_json_field("json", json_option);
         let schema = schema_builder.build();
         let index = Index::create_in_ram(schema);
@@ -1113,7 +1117,7 @@ mod tests {
     #[test]
     fn test_fast_field_in_json_field_with_tokenizer() {
         let mut schema_builder = Schema::builder();
-        let json_option = JsonObjectOptions::default().set_fast(Some("default"));
+        let json_option = JsonObjectOptions::default().set_fast("default");
         let json = schema_builder.add_json_field("json", json_option);
         let schema = schema_builder.build();
         let index = Index::create_in_ram(schema);
@@ -1139,7 +1143,7 @@ mod tests {
     fn test_fast_field_in_json_field_expand_dots_enabled() {
         let mut schema_builder = Schema::builder();
         let json_option = JsonObjectOptions::default()
-            .set_fast(None)
+            .set_fast(RAW_TOKENIZER_NAME)
             .set_expand_dots_enabled();
         let json = schema_builder.add_json_field("json", json_option);
         let schema = schema_builder.build();
@@ -1207,7 +1211,7 @@ mod tests {
     #[test]
     fn test_fast_field_tokenizer() {
         let mut schema_builder = Schema::builder();
-        let opt = TextOptions::default().set_fast(Some("custom_lowercase"));
+        let opt = TextOptions::default().set_fast("custom_lowercase");
         let text_field = schema_builder.add_text_field("text", opt);
         let schema = schema_builder.build();
         let ff_tokenizer_manager = TokenizerManager::default();
@@ -1243,7 +1247,7 @@ mod tests {
                     .set_index_option(crate::schema::IndexRecordOption::WithFreqs)
                     .set_tokenizer("raw"),
             )
-            .set_fast(Some("default"))
+            .set_fast("default")
             .set_stored();
 
         let log_field = schema_builder.add_text_field("log_level", text_fieldtype);
@@ -1276,7 +1280,7 @@ mod tests {
     fn test_shadowing_fast_field_with_expand_dots() {
         let mut schema_builder = Schema::builder();
         let json_option = JsonObjectOptions::default()
-            .set_fast(None)
+            .set_fast(RAW_TOKENIZER_NAME)
             .set_expand_dots_enabled();
         let json_field = schema_builder.add_json_field("jsonfield", json_option.clone());
         let shadowing_json_field = schema_builder.add_json_field("jsonfield.attr", json_option);

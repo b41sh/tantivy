@@ -324,7 +324,7 @@ impl TopDocs {
         sort_key_computer: impl SortKeyComputer<SortKey = TSortKey> + Send + 'static,
     ) -> impl Collector<Fruit = Vec<(TSortKey, DocAddress)>>
     where
-        TSortKey: 'static + Clone + Send + Sync + PartialOrd + std::fmt::Debug,
+        TSortKey: 'static + Clone + Send + Sync + std::fmt::Debug,
     {
         TopBySortKeyCollector::new(sort_key_computer, self.doc_range())
     }
@@ -445,7 +445,7 @@ where
     F: 'static + Send + Sync + Fn(&SegmentReader) -> TTweakScoreSortKeyFn,
     TTweakScoreSortKeyFn: 'static + Fn(DocId, Score) -> TSortKey,
     TweakScoreSegmentSortKeyComputer<TTweakScoreSortKeyFn>:
-        SegmentSortKeyComputer<SortKey = TSortKey>,
+        SegmentSortKeyComputer<SortKey = TSortKey, SegmentSortKey = TSortKey>,
     TSortKey: 'static + PartialOrd + Clone + Send + Sync + std::fmt::Debug,
 {
     type SortKey = TSortKey;
@@ -480,6 +480,7 @@ where
 {
     type SortKey = TSortKey;
     type SegmentSortKey = TSortKey;
+    type SegmentComparator = NaturalComparator;
 
     fn segment_sort_key(&mut self, doc: DocId, score: Score) -> TSortKey {
         (self.sort_key_fn)(doc, score)
@@ -512,7 +513,9 @@ pub struct TopNComputer<Score, D, C> {
     /// The buffer reverses sort order to get top-semantics instead of bottom-semantics
     buffer: Vec<ComparableDoc<Score, D>>,
     top_n: usize,
-    pub(crate) threshold: Option<Score>,
+    /// The current threshold for pruning. Documents with scores at or below
+    /// this value are skipped by `push()`. Updated when the buffer is truncated.
+    pub threshold: Option<Score>,
     comparator: C,
 }
 

@@ -9,6 +9,7 @@ const COMPRESSED_BLOCK_MAX_SIZE: usize = COMPRESSION_BLOCK_SIZE * MAX_VINT_SIZE;
 mod vint;
 
 /// Returns the size in bytes of a compressed block, given `num_bits`.
+#[inline]
 pub fn compressed_block_size(num_bits: u8) -> usize {
     (num_bits as usize) * COMPRESSION_BLOCK_SIZE / 8
 }
@@ -157,7 +158,7 @@ impl BlockDecoder {
     /// Uses the padded buffer to enable branchless search.
     #[inline]
     pub(crate) fn seek_within_block(&self, target: u32) -> usize {
-        crate::postings::branchless_binary_search(&self.output, target)
+        crate::postings::search_block(&self.output, target)
     }
 
     #[inline]
@@ -396,7 +397,10 @@ mod bench {
         let mut seed: [u8; 32] = [0; 32];
         seed[31] = seed_val;
         let mut rng = StdRng::from_seed(seed);
-        (0u32..).filter(|_| rng.gen_bool(ratio)).take(n).collect()
+        (0u32..)
+            .filter(|_| rng.random_bool(ratio))
+            .take(n)
+            .collect()
     }
 
     pub fn generate_array(n: usize, ratio: f64) -> Vec<u32> {

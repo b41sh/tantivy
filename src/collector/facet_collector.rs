@@ -389,6 +389,13 @@ impl SegmentCollector for FacetSegmentCollector {
             }
             let mut facet = vec![];
             let (facet_ord, facet_depth) = self.unique_facet_ords[collapsed_facet_ord];
+            // u64::MAX is used as a sentinel for unmapped ordinals (e.g. when a
+            // document has the exact registered facet, not a child of it).
+            // Passing it to ord_to_term would resolve to the last dictionary
+            // entry and produce a spurious facet from an unrelated branch.
+            if facet_ord == u64::MAX {
+                continue;
+            }
             // TODO handle errors.
             if facet_dict.ord_to_term(facet_ord, &mut facet).is_ok() {
                 if let Some((end_collapsed_facet, _)) = facet
@@ -486,9 +493,9 @@ mod tests {
     use std::collections::BTreeSet;
 
     use columnar::Dictionary;
-    use rand::distributions::Uniform;
+    use rand::distr::Uniform;
     use rand::prelude::SliceRandom;
-    use rand::{thread_rng, Rng};
+    use rand::{rng, Rng};
 
     use super::{FacetCollector, FacetCounts};
     use crate::collector::facet_collector::compress_mapping;
@@ -731,7 +738,7 @@ mod tests {
         let schema = schema_builder.build();
         let index = Index::create_in_ram(schema);
 
-        let uniform = Uniform::new_inclusive(1, 100_000);
+        let uniform = Uniform::new_inclusive(1, 100_000).unwrap();
         let mut docs: Vec<TantivyDocument> =
             vec![("a", 10), ("b", 100), ("c", 7), ("d", 12), ("e", 21)]
                 .into_iter()
@@ -741,14 +748,11 @@ mod tests {
                     std::iter::repeat_n(doc, count)
                 })
                 .map(|mut doc| {
-                    doc.add_facet(
-                        facet_field,
-                        &format!("/facet/{}", thread_rng().sample(uniform)),
-                    );
+                    doc.add_facet(facet_field, &format!("/facet/{}", rng().sample(uniform)));
                     doc
                 })
                 .collect();
-        docs[..].shuffle(&mut thread_rng());
+        docs[..].shuffle(&mut rng());
 
         let mut index_writer: IndexWriter = index.writer_for_tests().unwrap();
         for doc in docs {
@@ -817,13 +821,70 @@ mod tests {
         assert!(!super::is_child_facet(&b"foo\0bar"[..], &b"foo"[..]));
         assert!(!super::is_child_facet(&b"foo"[..], &b"foobar\0baz"[..]));
     }
+
+    // Regression test for https://github.com/quickwit-oss/tantivy/issues/2494
+    // When a document has the exact registered facet path (not just a child),
+    // harvest() must not turn the unmapped sentinel into a spurious root entry.
+    #[test]
+    fn test_facet_collector_wrong_root() -> crate::Result<()> {
+        let mut schema_builder = Schema::builder();
+        let facet_field = schema_builder.add_facet_field("facet", FacetOptions::default());
+        let schema = schema_builder.build();
+        let index = Index::create_in_ram(schema);
+
+        let mut index_writer: IndexWriter = index.writer_for_tests()?;
+        let facets: Vec<&str> = vec![
+            "/science-fiction/asimov",
+            "/science-fiction/clarke",
+            "/science-fiction/dick",
+            "/science-fiction/herbert",
+            "/science-fiction/orwell",
+            // This exact match on the registered facet is the bug trigger:
+            // its ordinal maps to the sentinel (u64::MAX, 0) in the collapse
+            // mapping, which without the fix resolves to an unrelated term.
+            "/fantasy/epic-fantasy",
+            "/fantasy/epic-fantasy/tolkien",
+            "/fantasy/epic-fantasy/martin",
+        ];
+        for facet_str in &facets {
+            index_writer.add_document(doc!(
+                facet_field => Facet::from(*facet_str)
+            ))?;
+        }
+        index_writer.commit()?;
+
+        let reader = index.reader()?;
+        let searcher = reader.searcher();
+
+        let term = Term::from_facet(facet_field, &Facet::from("/fantasy/epic-fantasy"));
+        let query = TermQuery::new(term, IndexRecordOption::Basic);
+
+        let mut facet_collector = FacetCollector::for_field("facet");
+        facet_collector.add_facet("/fantasy/epic-fantasy");
+        let counts: FacetCounts = searcher.search(&query, &facet_collector)?;
+
+        let result: Vec<(String, u64)> = counts
+            .get("/")
+            .map(|(facet, count)| (facet.to_string(), count))
+            .collect();
+
+        // Only children of /fantasy/epic-fantasy should appear, not /science-fiction
+        assert_eq!(
+            result,
+            vec![
+                ("/fantasy/epic-fantasy/martin".to_string(), 1),
+                ("/fantasy/epic-fantasy/tolkien".to_string(), 1),
+            ]
+        );
+        Ok(())
+    }
 }
 
 #[cfg(all(test, feature = "unstable"))]
 mod bench {
 
+    use rand::rng;
     use rand::seq::SliceRandom;
-    use rand::thread_rng;
     use test::Bencher;
 
     use crate::collector::FacetCollector;
@@ -846,7 +907,7 @@ mod bench {
             }
         }
         // 40425 docs
-        docs[..].shuffle(&mut thread_rng());
+        docs[..].shuffle(&mut rng());
 
         let mut index_writer: IndexWriter = index.writer_for_tests().unwrap();
         for doc in docs {

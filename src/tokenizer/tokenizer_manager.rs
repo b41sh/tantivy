@@ -1,11 +1,13 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use crate::tokenizer::stemmer::Language;
 use crate::tokenizer::tokenizer::TextAnalyzer;
 use crate::tokenizer::{
-    LowerCaser, RawTokenizer, RemoveLongFilter, SimpleTokenizer, Stemmer, WhitespaceTokenizer,
+    LowerCaser, RawTokenizer, RemoveLongFilter, SimpleTokenizer, WhitespaceTokenizer,
+    RAW_TOKENIZER_NAME,
 };
+
+pub(crate) const DEFAULT_TOKENIZER_NAME: &str = "default";
 
 /// The tokenizer manager serves as a store for
 /// all of the pre-configured tokenizer pipelines.
@@ -56,22 +58,26 @@ impl Default for TokenizerManager {
     /// the default pre-configured tokenizers of `tantivy`.
     fn default() -> TokenizerManager {
         let manager = TokenizerManager::new();
-        manager.register("raw", RawTokenizer::default());
+        manager.register(RAW_TOKENIZER_NAME, RawTokenizer::default());
         manager.register(
-            "default",
+            DEFAULT_TOKENIZER_NAME,
             TextAnalyzer::builder(SimpleTokenizer::default())
                 .filter(RemoveLongFilter::limit(40))
                 .filter(LowerCaser)
                 .build(),
         );
-        manager.register(
-            "en_stem",
-            TextAnalyzer::builder(SimpleTokenizer::default())
-                .filter(RemoveLongFilter::limit(40))
-                .filter(LowerCaser)
-                .filter(Stemmer::new(Language::English))
-                .build(),
-        );
+        #[cfg(feature = "stemmer")]
+        {
+            use crate::tokenizer::stemmer::{Language, Stemmer};
+            manager.register(
+                "en_stem",
+                TextAnalyzer::builder(SimpleTokenizer::default())
+                    .filter(RemoveLongFilter::limit(40))
+                    .filter(LowerCaser) // The stemmer does not lowercase
+                    .filter(Stemmer::new(Language::English))
+                    .build(),
+            );
+        }
         manager.register("whitespace", WhitespaceTokenizer::default());
         manager
     }

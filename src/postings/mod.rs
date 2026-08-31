@@ -2,7 +2,7 @@
 
 mod block_search;
 
-pub(crate) use self::block_search::branchless_binary_search;
+pub(crate) use self::block_search::search_block;
 
 mod block_segment_postings;
 pub(crate) mod compression;
@@ -14,7 +14,8 @@ mod postings;
 mod postings_writer;
 mod recorder;
 mod segment_postings;
-mod serializer;
+/// Serializer module for the inverted index
+pub mod serializer;
 mod skip;
 mod term_info;
 
@@ -62,8 +63,8 @@ pub(crate) mod tests {
         let text_field = schema_builder.add_text_field("text", TEXT);
         let schema = schema_builder.build();
         let index = Index::create_in_ram(schema);
-        let mut segment = index.new_segment();
-        let mut posting_serializer = InvertedIndexSerializer::open(&mut segment)?;
+        let segment = index.new_segment();
+        let mut posting_serializer = InvertedIndexSerializer::open(&segment)?;
         let mut field_serializer = posting_serializer.new_field(text_field, 120 * 4, None)?;
         field_serializer.new_term("abc".as_bytes(), 12u32, true)?;
         for doc_id in 0u32..120u32 {
@@ -527,6 +528,7 @@ pub(crate) mod tests {
     }
 
     impl<TScorer: Scorer> Scorer for UnoptimizedDocSet<TScorer> {
+        #[inline]
         fn score(&mut self) -> Score {
             self.0.score()
         }
@@ -603,13 +605,13 @@ mod bench {
             let mut index_writer: IndexWriter = index.writer_for_tests().unwrap();
             for _ in 0..posting_list_size {
                 let mut doc = TantivyDocument::default();
-                if rng.gen_bool(1f64 / 15f64) {
+                if rng.random_bool(1f64 / 15f64) {
                     doc.add_text(text_field, "a");
                 }
-                if rng.gen_bool(1f64 / 10f64) {
+                if rng.random_bool(1f64 / 10f64) {
                     doc.add_text(text_field, "b");
                 }
-                if rng.gen_bool(1f64 / 5f64) {
+                if rng.random_bool(1f64 / 5f64) {
                     doc.add_text(text_field, "c");
                 }
                 doc.add_text(text_field, "d");

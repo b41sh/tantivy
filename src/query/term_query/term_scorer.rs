@@ -4,7 +4,7 @@ use common::json_path_writer::JsonArrayPathEntry;
 
 use crate::docset::DocSet;
 use crate::fieldnorm::FieldNormReader;
-use crate::postings::{FreqReadingOption, Postings, SegmentPostings};
+use crate::postings::{BlockSegmentPostings, FreqReadingOption, Postings, SegmentPostings};
 use crate::query::bm25::Bm25Weight;
 use crate::query::{Explanation, JsonPathScorer, Scorer};
 use crate::schema::{Field, Type};
@@ -104,17 +104,36 @@ impl TermScorer {
     pub fn last_doc_in_block(&self) -> DocId {
         self.postings.block_cursor.skip_reader().last_doc_in_block()
     }
+
+    /// Returns a mutable reference to the underlying block cursor.
+    pub(crate) fn block_cursor(&mut self) -> &mut BlockSegmentPostings {
+        &mut self.postings.block_cursor
+    }
+
+    /// Returns a reference to the fieldnorm reader for batch lookups.
+    pub(crate) fn fieldnorm_reader(&self) -> &FieldNormReader {
+        &self.fieldnorm_reader
+    }
+
+    /// Returns a reference to the BM25 weight for batch score computation.
+    pub(crate) fn bm25_weight(&self) -> &Bm25Weight {
+        &self.similarity_weight
+    }
 }
 
 impl DocSet for TermScorer {
+    #[inline]
     fn advance(&mut self) -> DocId {
         self.postings.advance()
     }
 
+    #[inline]
     fn seek(&mut self, target: DocId) -> DocId {
+        debug_assert!(target >= self.doc());
         self.postings.seek(target)
     }
 
+    #[inline]
     fn doc(&self) -> DocId {
         self.postings.doc()
     }
@@ -122,9 +141,16 @@ impl DocSet for TermScorer {
     fn size_hint(&self) -> u32 {
         self.postings.size_hint()
     }
+
+    // TODO
+    // It is probably possible to optimize fill_bitset_block for TermScorer,
+    // working directly with the blocks, enabling vectorization.
+    // I did not manage to get a performance improvement on Mac ARM,
+    // and do not have access to x86 to investigate.
 }
 
 impl Scorer for TermScorer {
+    #[inline]
     fn score(&mut self) -> Score {
         let fieldnorm_id = self.fieldnorm_id();
         let term_freq = self.term_freq();
@@ -333,10 +359,10 @@ mod tests {
         let mut writer: IndexWriter =
             index.writer_with_num_threads(3, 3 * MEMORY_BUDGET_NUM_BYTES_MIN)?;
         use rand::Rng;
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         writer.set_merge_policy(Box::new(NoMergePolicy));
         for _ in 0..3_000 {
-            let term_freq = rng.gen_range(1..10000);
+            let term_freq = rng.random_range(1..10000);
             let words: Vec<&str> = std::iter::repeat_n("bbbb", term_freq).collect();
             let text = words.join(" ");
             writer.add_document(doc!(text_field=>text))?;

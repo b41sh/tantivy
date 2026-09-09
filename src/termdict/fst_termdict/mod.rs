@@ -18,12 +18,10 @@
 //!
 //! A second datastructure makes it possible to access a
 //! [`TermInfo`](crate::postings::TermInfo).
-mod merger;
 mod streamer;
 mod term_info_store;
 mod termdict;
 
-pub use self::merger::TermMerger;
 pub use self::streamer::{TermStreamer, TermStreamerBuilder};
 pub use self::term_info_store::TermInfoStore;
 pub use self::termdict::{TermDictionary, TermDictionaryBuilder};

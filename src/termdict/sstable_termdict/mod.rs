@@ -1,7 +1,4 @@
 use std::io;
-
-mod merger;
-
 use std::iter::ExactSizeIterator;
 
 use common::VInt;
@@ -9,7 +6,6 @@ use sstable::value::{ValueReader, ValueWriter};
 use sstable::SSTable;
 use tantivy_fst::automaton::AlwaysMatch;
 
-pub use self::merger::TermMerger;
 use crate::postings::TermInfo;
 
 /// The term dictionary contains all of the terms in

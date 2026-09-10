@@ -222,7 +222,6 @@ use std::fmt;
 
 pub use census::{Inventory, TrackedObject};
 pub use common::{f64_to_u64, i64_to_u64, u64_to_f64, u64_to_i64, HasLen};
-pub use common::OccurrencePathEntry;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 
@@ -237,8 +236,9 @@ pub use crate::indexer::{IndexWriter, SingleSegmentIndexWriter};
 #[cfg(feature = "quickwit")]
 pub use crate::json_array::{JsonArrayPlugin, JsonArrayQuery, JSON_ARRAY_EXTENSION};
 pub use crate::plugin::{
-    PluginMergeContext, PluginWarmupFuture, PluginWriter, PluginWriterContext, SegmentPlugin,
-    TermOccurrence, TermOccurrenceMetadata, TermOccurrenceProvider, TermOccurrenceReader,
+    OccurrencePathEntry, PluginMergeContext, PluginWarmupFuture, PluginWriter, PluginWriterContext,
+    SegmentPlugin, TermOccurrence, TermOccurrenceMetadata, TermOccurrenceProvider,
+    TermOccurrenceReader,
 };
 pub use crate::schema::{Document, TantivyDocument, Term};
 

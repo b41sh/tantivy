@@ -366,6 +366,7 @@ impl InvertedIndexPluginWriter {
                         .set_expand_dots(json_options.is_expand_dots_enabled());
                     for json_value in values {
                         self.json_path_writer.clear();
+                        let mut array_path = Vec::new();
 
                         index_json_value(
                             doc_id,
@@ -377,6 +378,7 @@ impl InvertedIndexPluginWriter {
                             ctx,
                             &mut self.json_positions_per_path,
                             occurrence_writers,
+                            &mut array_path,
                         );
                     }
                 }

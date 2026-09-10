@@ -9,15 +9,16 @@ use std::io::{self, Write};
 use std::ops::Range;
 use std::sync::Arc;
 
-use common::{HasLen, OccurrencePathEntry, TerminatingWrite};
+use common::{HasLen, TerminatingWrite};
 use sstable::{Dictionary, RangeSSTable, SSTable};
 
 use crate::docset::TERMINATED;
 use crate::index::{SegmentComponent, SegmentReader};
 use crate::indexer::doc_id_mapping::DocIdMapping;
 use crate::plugin::{
-    PluginMergeContext, PluginWarmupFuture, PluginWriter, PluginWriterContext, SegmentPlugin,
-    TermOccurrence, TermOccurrenceMetadata, TermOccurrenceProvider, TermOccurrenceReader,
+    OccurrencePathEntry, PluginMergeContext, PluginWarmupFuture, PluginWriter, PluginWriterContext,
+    SegmentPlugin, TermOccurrence, TermOccurrenceMetadata, TermOccurrenceProvider,
+    TermOccurrenceReader,
 };
 use crate::query::{EnableScoring, Explanation, Occur, Query, QueryClone, Scorer, Weight};
 use crate::schema::{Field, Term, Type};

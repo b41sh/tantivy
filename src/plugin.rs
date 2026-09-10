@@ -14,7 +14,7 @@ use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use common::{HasLen, OccurrencePathEntry};
+use common::HasLen;
 
 use crate::index::{IndexSettings, SegmentComponent, SegmentReader};
 use crate::indexer::doc_id_mapping::SegmentDocIdMapping;
@@ -22,6 +22,15 @@ use crate::schema::document::ErasedDocument;
 use crate::schema::{Schema, Term};
 use crate::space_usage::ComponentSpaceUsage;
 use crate::{DocId, Segment};
+
+/// Identifies one array container and the element currently visited in it.
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct OccurrencePathEntry {
+    /// Canonical internal JSON path of the array container.
+    pub path: Arc<str>,
+    /// Zero-based element ordinal in that array.
+    pub element_ord: u32,
+}
 
 /// One normalized JSON term occurrence emitted by the built-in inverted-index writer.
 pub struct TermOccurrence<'a> {

@@ -199,6 +199,7 @@ impl InvertedIndexPluginWriter {
         &mut self,
         doc_id: DocId,
         doc: &D,
+        occurrence_writers: &mut [Box<dyn PluginWriter>],
     ) -> crate::Result<()> {
         let vals_grouped_by_field = doc
             .iter_fields_and_values()
@@ -240,6 +241,7 @@ impl InvertedIndexPluginWriter {
                             term_buffer,
                             ctx,
                             &mut indexing_position,
+                            None,
                         );
                     }
                 }
@@ -265,6 +267,7 @@ impl InvertedIndexPluginWriter {
                             term_buffer,
                             ctx,
                             &mut indexing_position,
+                            None,
                         );
                     }
                     if field_entry.has_fieldnorms() {
@@ -373,6 +376,7 @@ impl InvertedIndexPluginWriter {
                             postings_writer,
                             ctx,
                             &mut self.json_positions_per_path,
+                            occurrence_writers,
                         );
                     }
                 }

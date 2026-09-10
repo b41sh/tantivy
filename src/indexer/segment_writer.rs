@@ -182,7 +182,8 @@ impl SegmentWriter {
         self.doc_opstamps.push(opstamp);
 
         // Built-in writers index the document generically — zero-copy for any `Document` type.
-        self.inverted_index.index_document(doc_id, &document)?;
+        self.inverted_index
+            .index_document(doc_id, &document, &mut self.custom_plugins)?;
         self.fast_fields.index_document(&document)?;
         self.store_writer.store(&document, &self.schema)?;
 

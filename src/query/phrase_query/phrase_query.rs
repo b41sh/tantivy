@@ -94,6 +94,16 @@ impl PhraseQuery {
             .collect::<Vec<Term>>()
     }
 
+    #[cfg(feature = "quickwit")]
+    pub(crate) fn phrase_terms_with_offsets(&self) -> &[(usize, Term)] {
+        &self.phrase_terms
+    }
+
+    #[cfg(feature = "quickwit")]
+    pub(crate) fn slop(&self) -> u32 {
+        self.slop
+    }
+
     /// Returns the [`PhraseWeight`] for the given phrase query given a specific `searcher`.
     ///
     /// This function is the same as [`Query::weight()`] except it returns

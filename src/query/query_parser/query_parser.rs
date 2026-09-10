@@ -13,6 +13,8 @@ use tantivy_fst::Regex;
 
 use super::logical_ast::*;
 use crate::index::Index;
+#[cfg(feature = "quickwit")]
+use crate::json_array::JsonArrayQuery;
 use crate::json_utils::convert_to_fast_value_and_append_to_json_term;
 use crate::query::range_query::{is_type_valid_for_fastfield_range_query, RangeQuery};
 use crate::query::{
@@ -1089,6 +1091,17 @@ fn convert_to_query(fuzzy: &FxHashMap<Field, Fuzzy>, logical_ast: LogicalAst) ->
                 !occur_subqueries.is_empty(),
                 "Should not be empty after trimming"
             );
+            #[cfg(feature = "quickwit")]
+            {
+                let json_array_clauses = occur_subqueries
+                    .iter()
+                    .map(|(occur, query)| (*occur, query.box_clone()))
+                    .collect();
+                if let Some(json_array_query) = JsonArrayQuery::try_from_clauses(json_array_clauses)
+                {
+                    return Box::new(json_array_query);
+                }
+            }
             Box::new(BooleanQuery::new(occur_subqueries))
         }
         Some(LogicalAst::Leaf(trimmed_logical_literal)) => {

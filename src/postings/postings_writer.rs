@@ -103,6 +103,8 @@ pub(crate) struct IndexingPosition {
     pub end_position: u32,
 }
 
+pub(crate) type TermOccurrenceCallback<'a> = dyn FnMut(u32, &[u8]) + 'a;
+
 /// The `PostingsWriter` is in charge of receiving documenting
 /// and building a `Segment` in anonymous memory.
 ///
@@ -136,6 +138,7 @@ pub(crate) trait PostingsWriter: Send + Sync {
         term_buffer: &mut IndexingTerm,
         ctx: &mut IndexingContext,
         indexing_position: &mut IndexingPosition,
+        mut on_occurrence: Option<&mut TermOccurrenceCallback<'_>>,
     ) {
         let end_of_path_idx = term_buffer.len_bytes();
         let mut num_tokens = 0;
@@ -156,6 +159,9 @@ pub(crate) trait PostingsWriter: Send + Sync {
             let start_position = indexing_position.end_position + token.position as u32;
             end_position = end_position.max(start_position + token.position_length as u32);
             self.subscribe(doc_id, start_position, term_buffer, ctx);
+            if let Some(callback) = on_occurrence.as_mut() {
+                callback(start_position, term_buffer.serialized_term());
+            }
             num_tokens += 1;
         });
 

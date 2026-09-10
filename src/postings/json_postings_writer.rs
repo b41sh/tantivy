@@ -6,7 +6,7 @@ use stacker::Addr;
 use crate::indexer::doc_id_mapping::DocIdMapping;
 use crate::indexer::indexing_term::IndexingTerm;
 use crate::indexer::path_to_unordered_id::OrderedPathId;
-use crate::postings::postings_writer::SpecializedPostingsWriter;
+use crate::postings::postings_writer::{SpecializedPostingsWriter, TermOccurrenceCallback};
 use crate::postings::recorder::{BufferLender, DocIdRecorder, Recorder};
 use crate::postings::{FieldSerializer, IndexingContext, IndexingPosition, PostingsWriter};
 use crate::schema::{Field, Type};
@@ -48,6 +48,7 @@ impl<Rec: Recorder> PostingsWriter for JsonPostingsWriter<Rec> {
         term_buffer: &mut IndexingTerm,
         ctx: &mut IndexingContext,
         indexing_position: &mut IndexingPosition,
+        on_occurrence: Option<&mut TermOccurrenceCallback<'_>>,
     ) {
         self.str_posting_writer.index_text(
             doc_id,
@@ -55,6 +56,7 @@ impl<Rec: Recorder> PostingsWriter for JsonPostingsWriter<Rec> {
             term_buffer,
             ctx,
             indexing_position,
+            on_occurrence,
         );
     }
 

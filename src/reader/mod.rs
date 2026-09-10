@@ -74,6 +74,7 @@ impl IndexReaderBuilder {
     /// to open different segment readers. It may take hundreds of milliseconds
     /// of time and it may return an error.
     pub fn try_into(self) -> crate::Result<IndexReader> {
+        self.index.validate_plugins()?;
         let searcher_generation_inventory = Inventory::default();
         let warming_state = WarmingState::new(
             self.num_warming_threads,

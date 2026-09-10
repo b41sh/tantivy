@@ -9,15 +9,62 @@
 
 use std::any::Any;
 use std::collections::BTreeMap;
+use std::future::Future;
+use std::io;
+use std::pin::Pin;
+use std::sync::Arc;
 
-use common::HasLen;
+use common::{HasLen, OccurrencePathEntry};
 
 use crate::index::{IndexSettings, SegmentComponent, SegmentReader};
 use crate::indexer::doc_id_mapping::SegmentDocIdMapping;
 use crate::schema::document::ErasedDocument;
-use crate::schema::Schema;
+use crate::schema::{Schema, Term};
 use crate::space_usage::ComponentSpaceUsage;
 use crate::{DocId, Segment};
+
+/// One normalized JSON term occurrence emitted by the built-in inverted-index writer.
+pub struct TermOccurrence<'a> {
+    /// Field containing the term.
+    pub field: crate::schema::Field,
+    /// Segment-local document id.
+    pub doc_id: DocId,
+    /// Position within the JSON path's token stream.
+    pub position: u32,
+    /// Canonical internal JSON path, using Tantivy's path separator.
+    pub json_path: &'a str,
+    /// Serialized JSON value bytes: nested value type marker followed by its payload.
+    pub term_value_bytes: &'a [u8],
+    /// Nested JSON array containers associated with this occurrence.
+    pub array_path: &'a [OccurrencePathEntry],
+}
+
+/// Metadata attached to one occurrence of a term in a document.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TermOccurrenceMetadata {
+    /// Position within the JSON path's token stream.
+    pub position: u32,
+    /// Nested JSON array containers associated with this occurrence.
+    pub array_path: Arc<[OccurrencePathEntry]>,
+}
+
+/// Per-term reader supplied by a segment plugin.
+pub trait TermOccurrenceReader: Send + Sync {
+    /// Appends occurrence metadata for `doc_id` to `output` and returns whether any was found.
+    fn read_doc(&self, doc_id: DocId, output: &mut Vec<TermOccurrenceMetadata>) -> bool;
+}
+
+/// Segment-scoped provider of term occurrence metadata.
+pub trait TermOccurrenceProvider: Send + Sync {
+    /// Opens metadata for one term.
+    fn open_term(&self, term: &Term) -> io::Result<Option<Arc<dyn TermOccurrenceReader>>>;
+
+    /// Warms metadata for one term before synchronous search.
+    fn warm_term<'a>(&'a self, term: &'a Term) -> PluginWarmupFuture<'a>;
+}
+
+/// Future returned by plugin warmup hooks.
+pub type PluginWarmupFuture<'a> = Pin<Box<dyn Future<Output = io::Result<()>> + Send + 'a>>;
 
 /// A pluggable segment component that participates in writing and merging.
 ///
@@ -48,6 +95,18 @@ pub trait SegmentPlugin: Send + Sync + 'static {
 
     /// Merge data from multiple source segments into a target segment.
     fn merge(&self, ctx: PluginMergeContext) -> crate::Result<()>;
+
+    /// Opens this plugin's segment-scoped occurrence metadata provider.
+    ///
+    /// Plugins that do not attach metadata to postings keep the default `None` implementation.
+    /// The provider is opened once while constructing a [`SegmentReader`] and reused for all
+    /// terms in that segment.
+    fn open_term_occurrence_provider(
+        &self,
+        _segment: &Segment,
+    ) -> crate::Result<Option<Arc<dyn TermOccurrenceProvider>>> {
+        Ok(None)
+    }
 
     /// Report on-disk space usage of this component, keyed by component name.
     ///
@@ -95,6 +154,11 @@ pub trait PluginWriter: Send + Any {
     ) -> crate::Result<()> {
         Ok(())
     }
+
+    /// Receives one normalized JSON term occurrence from the built-in inverted-index writer.
+    ///
+    /// The default implementation ignores the occurrence.
+    fn add_term_occurrence(&mut self, _occurrence: &TermOccurrence<'_>) {}
 
     /// Serialize accumulated data to segment files and finalize them.
     /// Called once, during `SegmentWriter::finalize()`.
@@ -434,16 +498,24 @@ mod tests {
             vec!["marker".to_string()]
         );
 
-        // Reopen without re-registering the plugin: writing must fail closed
-        // rather than silently dropping the plugin's data.
+        // Reopen without re-registering the plugin: reading and writing must fail closed rather
+        // than silently ignoring or dropping the plugin's data.
         let reopened = Index::open(dir.clone())?;
-        let err = reopened
+        let read_err = reopened
+            .reader()
+            .err()
+            .expect("reader creation should fail when the plugin is not registered");
+        assert!(
+            matches!(read_err, TantivyError::MissingPlugin(ref exts) if exts.contains("marker")),
+            "expected MissingPlugin error, got {read_err:?}"
+        );
+        let write_err = reopened
             .writer_with_num_threads::<crate::TantivyDocument>(1, 15_000_000)
             .err()
             .expect("writer creation should fail when the plugin is not registered");
         assert!(
-            matches!(err, TantivyError::MissingPlugin(ref exts) if exts.contains("marker")),
-            "expected MissingPlugin error, got {err:?}"
+            matches!(write_err, TantivyError::MissingPlugin(ref exts) if exts.contains("marker")),
+            "expected MissingPlugin error, got {write_err:?}"
         );
 
         // Re-registering the plugin clears the guard.

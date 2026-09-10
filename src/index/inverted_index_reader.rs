@@ -1,4 +1,5 @@
 use std::io;
+use std::sync::Arc;
 
 use common::json_path_writer::JSON_END_OF_PATH;
 use common::{BinarySerializable, ByteCount};
@@ -10,6 +11,7 @@ use itertools::Itertools;
 use tantivy_fst::automaton::{AlwaysMatch, Automaton};
 
 use crate::directory::FileSlice;
+use crate::plugin::TermOccurrenceProvider;
 use crate::positions::PositionReader;
 use crate::postings::{BlockSegmentPostings, SegmentPostings, TermInfo};
 use crate::schema::{IndexRecordOption, Term, Type};
@@ -33,6 +35,8 @@ pub struct InvertedIndexReader {
     positions_file_slice: FileSlice,
     record_option: IndexRecordOption,
     total_num_tokens: u64,
+    #[cfg_attr(not(feature = "quickwit"), allow(dead_code))]
+    occurrence_providers: Vec<Arc<dyn TermOccurrenceProvider>>,
 }
 
 /// Object that records the amount of space used by a field in an inverted index.
@@ -68,6 +72,7 @@ impl InvertedIndexReader {
         postings_file_slice: FileSlice,
         positions_file_slice: FileSlice,
         record_option: IndexRecordOption,
+        occurrence_providers: Vec<Arc<dyn TermOccurrenceProvider>>,
     ) -> io::Result<InvertedIndexReader> {
         let (total_num_tokens_slice, postings_body) = postings_file_slice.split(8);
         let total_num_tokens = u64::deserialize(&mut total_num_tokens_slice.read_bytes()?)?;
@@ -77,6 +82,7 @@ impl InvertedIndexReader {
             positions_file_slice,
             record_option,
             total_num_tokens,
+            occurrence_providers,
         })
     }
 
@@ -89,6 +95,7 @@ impl InvertedIndexReader {
             positions_file_slice: FileSlice::empty(),
             record_option,
             total_num_tokens: 0u64,
+            occurrence_providers: Vec::new(),
         }
     }
 
@@ -335,22 +342,34 @@ impl InvertedIndexReader {
     /// returns a boolean, whether the term was found in the dictionary
     pub async fn warm_postings(&self, term: &Term, with_positions: bool) -> io::Result<bool> {
         let term_info_opt: Option<TermInfo> = self.get_term_info_async(term).await?;
-        if let Some(term_info) = term_info_opt {
-            let postings = self
-                .postings_file_slice
-                .read_bytes_slice_async(term_info.postings_range.clone());
+        let Some(term_info) = term_info_opt else {
+            return Ok(false);
+        };
+
+        let postings = self
+            .postings_file_slice
+            .read_bytes_slice_async(term_info.postings_range.clone());
+        let positions = async {
             if with_positions {
-                let positions = self
-                    .positions_file_slice
-                    .read_bytes_slice_async(term_info.positions_range.clone());
-                futures_util::future::try_join(postings, positions).await?;
-            } else {
-                postings.await?;
+                self.positions_file_slice
+                    .read_bytes_slice_async(term_info.positions_range.clone())
+                    .await?;
             }
-            Ok(true)
-        } else {
-            Ok(false)
-        }
+            Ok::<(), io::Error>(())
+        };
+        let occurrences = async {
+            for provider in &self.occurrence_providers {
+                provider.warm_term(term).await?;
+            }
+            Ok::<(), io::Error>(())
+        };
+        futures_util::future::try_join3(
+            async { postings.await.map(|_| ()) },
+            positions,
+            occurrences,
+        )
+        .await?;
+        Ok(true)
     }
 
     /// Warmup a block postings given a range of `Term`s.

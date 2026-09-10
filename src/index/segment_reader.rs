@@ -14,6 +14,7 @@ use crate::fastfield::{intersect_alive_bitsets, AliveBitSet, FacetReader, FastFi
 use crate::fieldnorm::{FieldNormReader, FieldNormReaders};
 use crate::index::{Index, InvertedIndexReader, Segment, SegmentComponent, SegmentId};
 use crate::json_utils::json_path_sep_to_dot;
+use crate::plugin::TermOccurrenceProvider;
 use crate::schema::{Field, IndexRecordOption, Schema, Type};
 use crate::space_usage::{ComponentSpaceUsage, SegmentSpaceUsage};
 use crate::store::StoreReader;
@@ -46,6 +47,7 @@ pub struct SegmentReader {
     positions_composite: CompositeFile,
     fast_fields_readers: FastFieldReaders,
     fieldnorm_readers: FieldNormReaders,
+    occurrence_providers: Vec<Arc<dyn TermOccurrenceProvider>>,
 
     store_file: FileSlice,
     alive_bitset_opt: Option<AliveBitSet>,
@@ -134,6 +136,41 @@ impl SegmentReader {
         &self.fieldnorm_readers
     }
 
+    /// Returns whether any registered plugin provides term occurrence metadata.
+    pub fn has_term_occurrence_provider(&self) -> bool {
+        !self.occurrence_providers.is_empty()
+    }
+
+    /// Opens custom occurrence metadata associated with `term`.
+    ///
+    /// At most one registered plugin may provide metadata for a term.
+    pub fn term_occurrence_reader(
+        &self,
+        term: &crate::Term,
+    ) -> crate::Result<Option<Arc<dyn crate::plugin::TermOccurrenceReader>>> {
+        let mut reader = None;
+        for provider in &self.occurrence_providers {
+            if let Some(candidate) = provider.open_term(term)? {
+                if reader.is_some() {
+                    return Err(crate::TantivyError::InvalidArgument(format!(
+                        "multiple plugins provide occurrence metadata for term {term:?}"
+                    )));
+                }
+                reader = Some(candidate);
+            }
+        }
+        Ok(reader)
+    }
+
+    /// Warms custom occurrence metadata associated with `term`.
+    #[cfg(feature = "quickwit")]
+    pub async fn warm_term_occurrences(&self, term: &crate::Term) -> io::Result<()> {
+        for provider in &self.occurrence_providers {
+            provider.warm_term(term).await?;
+        }
+        Ok(())
+    }
+
     /// Accessor to the segment's [`StoreReader`](crate::store::StoreReader).
     ///
     /// `cache_num_blocks` sets the number of decompressed blocks to be cached in an LRU.
@@ -190,6 +227,12 @@ impl SegmentReader {
             .as_ref()
             .map(|alive_bitset| alive_bitset.num_alive_docs() as u32)
             .unwrap_or(max_doc);
+        let occurrence_providers = segment
+            .index()
+            .custom_plugins()
+            .iter()
+            .filter_map(|plugin| plugin.open_term_occurrence_provider(segment).transpose())
+            .collect::<crate::Result<Vec<_>>>()?;
 
         Ok(SegmentReader {
             index: segment.index().clone(),
@@ -200,6 +243,7 @@ impl SegmentReader {
             postings_composite,
             fast_fields_readers,
             fieldnorm_readers,
+            occurrence_providers,
             segment_id: segment.id(),
             delete_opstamp: segment.meta().delete_opstamp(),
             store_file,
@@ -275,6 +319,7 @@ impl SegmentReader {
             postings_file,
             positions_file,
             record_option,
+            self.occurrence_providers.clone(),
         )?);
 
         // by releasing the lock in between, we may end up opening the inverting index

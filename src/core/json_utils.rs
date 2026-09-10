@@ -4,6 +4,7 @@ use common::{replace_in_place, JsonPathWriter};
 use rustc_hash::FxHashMap;
 
 use crate::indexer::indexing_term::IndexingTerm;
+use crate::plugin::{PluginWriter, TermOccurrence};
 use crate::postings::{IndexingContext, IndexingPosition, PostingsWriter};
 use crate::schema::document::{ReferenceValue, ReferenceValueLeaf, Value};
 use crate::schema::{Type, DATE_TIME_PRECISION_INDEXED};
@@ -65,6 +66,33 @@ impl IndexingPositionsPerPath {
     }
 }
 
+fn emit_occurrence(
+    writers: &mut [Box<dyn PluginWriter>],
+    doc_id: DocId,
+    position: u32,
+    serialized_term: &[u8],
+    json_path: &str,
+    array_path: &[common::OccurrencePathEntry],
+) {
+    // JSON indexing terms use `[field id][unordered path id][nested type + payload]` while they
+    // are accumulated. The sidecar stores the final dictionary key instead: field id plus the
+    // canonical path and nested value bytes. The path id is intentionally omitted because it is
+    // segment-local and reordered during serialization.
+    debug_assert!(serialized_term.len() >= 8);
+    let field_id = u32::from_be_bytes(serialized_term[..4].try_into().unwrap());
+    let occurrence = TermOccurrence {
+        field: crate::schema::Field::from_field_id(field_id),
+        doc_id,
+        position,
+        json_path,
+        term_value_bytes: &serialized_term[8..],
+        array_path,
+    };
+    for writer in writers {
+        writer.add_term_occurrence(&occurrence);
+    }
+}
+
 /// Convert JSON_PATH_SEGMENT_SEP to a dot.
 pub fn json_path_sep_to_dot(path: &mut str) {
     // This is safe since we are replacing a ASCII character by another ASCII character.
@@ -83,6 +111,7 @@ fn index_json_object<'a, V: Value<'a>>(
     postings_writer: &mut dyn PostingsWriter,
     ctx: &mut IndexingContext,
     positions_per_path: &mut IndexingPositionsPerPath,
+    occurrence_writers: &mut [Box<dyn PluginWriter>],
 ) {
     for (json_path_segment, json_value_visitor) in json_visitor {
         if json_path_segment.as_bytes().contains(&JSON_END_OF_PATH) {
@@ -98,6 +127,7 @@ fn index_json_object<'a, V: Value<'a>>(
             postings_writer,
             ctx,
             positions_per_path,
+            occurrence_writers,
         );
         json_path_writer.pop();
     }
@@ -113,6 +143,7 @@ pub(crate) fn index_json_value<'a, V: Value<'a>>(
     postings_writer: &mut dyn PostingsWriter,
     ctx: &mut IndexingContext,
     positions_per_path: &mut IndexingPositionsPerPath,
+    occurrence_writers: &mut [Box<dyn PluginWriter>],
 ) {
     let set_path_id = |term_buffer: &mut IndexingTerm, unordered_id: u32| {
         term_buffer.truncate_value_bytes(0);
@@ -135,13 +166,37 @@ pub(crate) fn index_json_value<'a, V: Value<'a>>(
                 set_path_id(term_buffer, unordered_id);
                 set_type(term_buffer, Type::Str);
                 let indexing_position = positions_per_path.get_position_from_id(unordered_id);
-                postings_writer.index_text(
-                    doc,
-                    &mut *token_stream,
-                    term_buffer,
-                    ctx,
-                    indexing_position,
-                );
+                if occurrence_writers.is_empty() {
+                    postings_writer.index_text(
+                        doc,
+                        &mut *token_stream,
+                        term_buffer,
+                        ctx,
+                        indexing_position,
+                        None,
+                    );
+                } else {
+                    let json_path = json_path_writer.as_str().to_string();
+                    let array_path = json_path_writer.array_path().to_vec();
+                    let mut on_occurrence = |position: u32, serialized_term: &[u8]| {
+                        emit_occurrence(
+                            occurrence_writers,
+                            doc,
+                            position,
+                            serialized_term,
+                            &json_path,
+                            &array_path,
+                        );
+                    };
+                    postings_writer.index_text(
+                        doc,
+                        &mut *token_stream,
+                        term_buffer,
+                        ctx,
+                        indexing_position,
+                        Some(&mut on_occurrence),
+                    );
+                }
             }
             ReferenceValueLeaf::U64(val) => {
                 // try to parse to i64, since when querying we will apply the same logic and prefer
@@ -157,6 +212,14 @@ pub(crate) fn index_json_value<'a, V: Value<'a>>(
                     term_buffer.append_type_and_fast_value::<u64>(val);
                 }
                 postings_writer.subscribe(doc, 0u32, term_buffer, ctx);
+                emit_occurrence(
+                    occurrence_writers,
+                    doc,
+                    0,
+                    term_buffer.serialized_term(),
+                    json_path_writer.as_str(),
+                    json_path_writer.array_path(),
+                );
             }
             ReferenceValueLeaf::I64(val) => {
                 set_path_id(
@@ -166,6 +229,14 @@ pub(crate) fn index_json_value<'a, V: Value<'a>>(
                 );
                 term_buffer.append_type_and_fast_value(val);
                 postings_writer.subscribe(doc, 0u32, term_buffer, ctx);
+                emit_occurrence(
+                    occurrence_writers,
+                    doc,
+                    0,
+                    term_buffer.serialized_term(),
+                    json_path_writer.as_str(),
+                    json_path_writer.array_path(),
+                );
             }
             ReferenceValueLeaf::F64(val) => {
                 if !val.is_finite() {
@@ -193,6 +264,14 @@ pub(crate) fn index_json_value<'a, V: Value<'a>>(
                     }
                 }
                 postings_writer.subscribe(doc, 0u32, term_buffer, ctx);
+                emit_occurrence(
+                    occurrence_writers,
+                    doc,
+                    0,
+                    term_buffer.serialized_term(),
+                    json_path_writer.as_str(),
+                    json_path_writer.array_path(),
+                );
             }
             ReferenceValueLeaf::Bool(val) => {
                 set_path_id(
@@ -202,6 +281,14 @@ pub(crate) fn index_json_value<'a, V: Value<'a>>(
                 );
                 term_buffer.append_type_and_fast_value(val);
                 postings_writer.subscribe(doc, 0u32, term_buffer, ctx);
+                emit_occurrence(
+                    occurrence_writers,
+                    doc,
+                    0,
+                    term_buffer.serialized_term(),
+                    json_path_writer.as_str(),
+                    json_path_writer.array_path(),
+                );
             }
             ReferenceValueLeaf::Date(val) => {
                 set_path_id(
@@ -212,6 +299,14 @@ pub(crate) fn index_json_value<'a, V: Value<'a>>(
                 let val = val.truncate(DATE_TIME_PRECISION_INDEXED);
                 term_buffer.append_type_and_fast_value(val);
                 postings_writer.subscribe(doc, 0u32, term_buffer, ctx);
+                emit_occurrence(
+                    occurrence_writers,
+                    doc,
+                    0,
+                    term_buffer.serialized_term(),
+                    json_path_writer.as_str(),
+                    json_path_writer.array_path(),
+                );
             }
             ReferenceValueLeaf::PreTokStr(_) => {
                 unimplemented!(
@@ -232,7 +327,9 @@ pub(crate) fn index_json_value<'a, V: Value<'a>>(
             }
         },
         ReferenceValue::Array(elements) => {
-            for val in elements {
+            json_path_writer.push_array();
+            for (element_ord, val) in elements.enumerate() {
+                json_path_writer.set_array_element_ord(element_ord as u32);
                 index_json_value(
                     doc,
                     val,
@@ -242,8 +339,10 @@ pub(crate) fn index_json_value<'a, V: Value<'a>>(
                     postings_writer,
                     ctx,
                     positions_per_path,
+                    occurrence_writers,
                 );
             }
+            json_path_writer.pop_array();
         }
         ReferenceValue::Object(object) => {
             index_json_object::<V>(
@@ -255,6 +354,7 @@ pub(crate) fn index_json_value<'a, V: Value<'a>>(
                 postings_writer,
                 ctx,
                 positions_per_path,
+                occurrence_writers,
             );
         }
     }
